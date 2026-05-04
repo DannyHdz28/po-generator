@@ -183,6 +183,19 @@ COLOR_CODES = {
 
 # ─── HELPER FUNCTIONS ────────────────────────────────────────
 
+def fmtDate(v):
+    """Format date value to MM/DD/YYYY string."""
+    if not v:
+        return ""
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        return v.strftime('%m/%d/%Y')
+    s = str(v).strip()
+    # Clean double slashes
+    s = re.sub(r'/+', '/', s)
+    return s
+
+
 def cell_str(v):
     return str(v).upper().strip() if v is not None else ""
 
@@ -316,14 +329,7 @@ def parse_po_excel(file_bytes):
 
     # PO Date
     po_date_raw = find_header_value(rows, GLOSSARY["po_date"])
-    if po_date_raw:
-        import datetime as dt_module
-        if hasattr(po_date_raw, 'strftime'):
-            result["po_date"] = po_date_raw.strftime('%m/%d/%Y')
-        else:
-            result["po_date"] = str(po_date_raw).strip()
-    else:
-        result["po_date"] = ""
+    result["po_date"] = fmtDate(po_date_raw)
 
     # Ship Date — clean double slashes e.g. "9/15//2026" → "9/15/2026"
     ship_date_raw = find_header_value(rows, GLOSSARY["ship_date"])
@@ -331,14 +337,7 @@ def parse_po_excel(file_bytes):
 
     # Cancel Date
     cancel_raw = find_header_value(rows, GLOSSARY["cancel_date"])
-    if cancel_raw:
-        import datetime as dt_module
-        if hasattr(cancel_raw, 'strftime'):
-            result["cancel_date"] = cancel_raw.strftime('%m/%d/%Y')
-        else:
-            result["cancel_date"] = re.sub(r'/+', '/', str(cancel_raw).strip())
-    else:
-        result["cancel_date"] = ""
+    result["cancel_date"] = fmtDate(cancel_raw)
 
     # Customer Name — try standard, then look for "BILL TO:" label and grab value below/beside
     customer_name = find_header_value(rows, GLOSSARY["customer_name"])
@@ -421,6 +420,7 @@ def parse_po_excel(file_bytes):
 
     # ── Read product rows ──
     lines = []
+    last_valid_style = ""
     last_ship_date = result["ship_date"]
 
     for row in rows[data_header_row + 1:]:
@@ -441,20 +441,26 @@ def parse_po_excel(file_bytes):
                             break
             continue
 
-        # Get style
+        # Get style — carry forward last valid style for row-per-size format
         style_raw = ""
         if col_map.get("style") is not None and col_map["style"] < len(row):
             style_raw = str(row[col_map["style"]] or "").strip()
 
-        if not style_raw:
-            continue
-
-        # Skip total/summary rows and invalid style codes
-        if matches_any(style_raw, ["TOTAL", "SUBTOTAL", "GRAND TOTAL"]):
-            continue
-        # Must look like a real style code: letters+digits (e.g. FSS1411937-WBK)
-        if not re.match(r'^[A-Za-z]{2,}\d+', style_raw):
-            continue
+        if style_raw:
+            # Skip total/summary rows
+            if matches_any(style_raw, ["TOTAL", "SUBTOTAL", "GRAND TOTAL"]):
+                continue
+            # Must look like a real style code: letters+digits
+            if not re.match(r'^[A-Za-z]{2,}\d+', style_raw):
+                continue
+            # Valid — update carry-forward
+            last_valid_style = style_raw
+        else:
+            # Empty style cell — use carry-forward if we have a size value (row-per-size)
+            if last_valid_style and col_map.get("size") is not None:
+                style_raw = last_valid_style
+            else:
+                continue
 
         # Parse style + color
         stock, color_code, color_name = parse_style_color(style_raw)
@@ -545,6 +551,10 @@ def parse_po_excel(file_bytes):
                 pass
 
         if total_units == 0 and not desc:
+            continue
+
+        # In row-per-size format, skip rows with no size value (likely total rows)
+        if col_map.get("size") is not None and not size_val and not col_map.get("size_break"):
             continue
 
         line_cost    = cost

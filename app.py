@@ -286,27 +286,111 @@ def parse_po_excel(file_bytes):
     }
 
     # ── Extract header fields ──
-    # Special: PO# sometimes embedded in text like "PO# 26064  Pro Standard"
+
+    # PO Number — try standard lookup first, then special patterns
     po_number = find_header_value(rows, GLOSSARY["po_number"])
     if not po_number:
+        # Pattern 1: label "PO NAME" / "PO NUMBER" with value in adjacent cell
         for row in rows[:5]:
-            for cell in row:
-                if cell and "PO" in str(cell).upper():
-                    m = re.search(r'PO#?\s*([A-Z0-9-]+)', str(cell), re.IGNORECASE)
-                    if m and len(m.group(1)) > 2:
-                        po_number = m.group(1)
+            for j, cell in enumerate(row):
+                c = cell_str(cell)
+                if c in ("PO NAME", "PO NUMBER", "PO#"):
+                    # Value is in next cell on same row OR last non-empty cell in row
+                    for k in range(j+1, len(row)):
+                        v = str(row[k] or "").strip()
+                        if v and v not in ("", "None"):
+                            po_number = v
+                            break
+                    if po_number:
                         break
+                # Pattern 2: "PO# 26064  Pro Standard" embedded in text
+                if cell and "PO" in str(cell).upper() and not po_number:
+                    m = re.search(r'PO#?\s*([A-Z0-9][A-Z0-9\s\-]+)', str(cell), re.IGNORECASE)
+                    if m:
+                        candidate = m.group(1).strip()
+                        if len(candidate) > 2 and candidate.upper() not in ("NAME","NUMBER","DATE"):
+                            po_number = candidate
             if po_number:
                 break
     result["po_number"] = po_number
-    result["po_date"]       = find_header_value(rows, GLOSSARY["po_date"])
-    result["ship_date"]     = find_header_value(rows, GLOSSARY["ship_date"])
-    result["cancel_date"]   = find_header_value(rows, GLOSSARY["cancel_date"])
-    result["customer_name"] = find_header_value(rows, GLOSSARY["customer_name"])
+
+    # PO Date
+    po_date_raw = find_header_value(rows, GLOSSARY["po_date"])
+    if po_date_raw:
+        import datetime as dt_module
+        if hasattr(po_date_raw, 'strftime'):
+            result["po_date"] = po_date_raw.strftime('%m/%d/%Y')
+        else:
+            result["po_date"] = str(po_date_raw).strip()
+    else:
+        result["po_date"] = ""
+
+    # Ship Date — clean double slashes e.g. "9/15//2026" → "9/15/2026"
+    ship_date_raw = find_header_value(rows, GLOSSARY["ship_date"])
+    result["ship_date"] = re.sub(r'/+', '/', str(ship_date_raw)) if ship_date_raw else ""
+
+    # Cancel Date
+    cancel_raw = find_header_value(rows, GLOSSARY["cancel_date"])
+    if cancel_raw:
+        import datetime as dt_module
+        if hasattr(cancel_raw, 'strftime'):
+            result["cancel_date"] = cancel_raw.strftime('%m/%d/%Y')
+        else:
+            result["cancel_date"] = re.sub(r'/+', '/', str(cancel_raw).strip())
+    else:
+        result["cancel_date"] = ""
+
+    # Customer Name — try standard, then look for "BILL TO:" label and grab value below/beside
+    customer_name = find_header_value(rows, GLOSSARY["customer_name"])
+    if not customer_name:
+        for i, row in enumerate(rows[:10]):
+            for j, cell in enumerate(row):
+                c = cell_str(cell)
+                if c in ("BILL TO:", "BILL TO", "SOLD TO:", "SOLD TO"):
+                    # Value is in same cell after colon, or next cell, or next row same col
+                    raw = str(cell).strip()
+                    if ":" in raw:
+                        after = raw.split(":",1)[1].strip()
+                        if after and len(after) > 2:
+                            customer_name = after
+                            break
+                    # Try next row, same column
+                    if i+1 < len(rows) and j < len(rows[i+1]):
+                        v = str(rows[i+1][j] or "").strip()
+                        if v and len(v) > 2:
+                            customer_name = v
+                            break
+            if customer_name:
+                break
+    result["customer_name"] = customer_name
     result["customer_code"] = find_header_value(rows, GLOSSARY["customer_code"])
-    result["ship_to"]       = find_header_value(rows, GLOSSARY["ship_to"])
-    result["bill_to"]       = find_header_value(rows, GLOSSARY["bill_to"])
-    result["terms"]         = find_header_value(rows, GLOSSARY["terms"])
+
+    # Ship To — try standard, then look for "SHIP TO:" and collect lines below
+    ship_to = find_header_value(rows, GLOSSARY["ship_to"])
+    if not ship_to:
+        for i, row in enumerate(rows[:10]):
+            for j, cell in enumerate(row):
+                c = cell_str(cell)
+                if c in ("SHIP TO:", "SHIP TO", "SHIPPING ADDRESS:", "DELIVERY ADDRESS:"):
+                    # Collect next 3 non-empty rows at same column (stop at product table)
+                    parts = []
+                    for k in range(i+1, min(i+5, len(rows))):
+                        if j < len(rows[k]):
+                            v = str(rows[k][j] or "").strip()
+                            # Stop if we hit a product table header keyword
+                            if v and v.upper() in ("DESCRIPTION","VENDOR STYLE NO.","STYLE","QTY","UPC"):
+                                break
+                            if v:
+                                parts.append(v)
+                    if parts:
+                        ship_to = " | ".join(parts)
+                    break
+            if ship_to:
+                break
+    result["ship_to"] = ship_to
+
+    result["bill_to"] = find_header_value(rows, GLOSSARY["bill_to"])
+    result["terms"]   = find_header_value(rows, GLOSSARY["terms"])
 
     # ── Find product table header row ──
     data_header_row = None
@@ -322,6 +406,7 @@ def parse_po_excel(file_bytes):
             col_map["desc"]        = detect_col(row, GLOSSARY["col_desc"])
             col_map["color"]       = detect_col(row, GLOSSARY["col_color"])
             col_map["size_break"]  = detect_col(row, GLOSSARY["col_size_break"])
+            col_map["size"]        = detect_col(row, ["SIZE", "SIZES"])
             col_map["qty"]         = detect_col(row, GLOSSARY["col_qty"])
             col_map["cost"]        = detect_col(row, GLOSSARY["col_cost"])
             col_map["msrp"]        = detect_col(row, GLOSSARY["col_msrp"])
@@ -427,15 +512,32 @@ def parse_po_excel(file_bytes):
         # Sizes
         sizes = {s: 0 for s in SIZE_ORDER}
         total_units = 0
+        size_val = ""
+        qty_val  = 0
 
         if col_map.get("size_break") is not None and col_map["size_break"] < len(row):
-            # Compressed size break in one cell
+            # Compressed size break in one cell e.g. "S - 3X   18/30/42/30/18/6"
             sb_val = row[col_map["size_break"]]
             if sb_val:
                 sizes = parse_size_break(sb_val)
                 total_units = sum(sizes.values())
+        elif col_map.get("size") is not None and col_map.get("qty") is not None:
+            # One row per size — just record size+qty, group later
+            size_val = str(row[col_map["size"]] or "").strip()
+            try:
+                qty_val = int(float(row[col_map["qty"]] or 0))
+            except (ValueError, TypeError):
+                qty_val = 0
+            # Handle "OSFM / BLU" combined size+color
+            if "/" in size_val:
+                parts = size_val.split("/")
+                size_val = parts[0].strip()
+                if not color_code:
+                    color_code = parts[1].strip()[:3]
+            norm_size = normalize_size(size_val) if size_val else "OS"
+            sizes[norm_size] = qty_val
+            total_units = qty_val
         elif col_map.get("qty") is not None and col_map["qty"] < len(row):
-            # Single qty column
             try:
                 total_units = int(float(row[col_map["qty"]] or 0))
                 sizes["OS"] = total_units
@@ -445,27 +547,41 @@ def parse_po_excel(file_bytes):
         if total_units == 0 and not desc:
             continue
 
-        # cost column is already net (discount already applied by client)
-        # discount value is stored for reference only
         line_cost    = cost
         total_cost   = line_cost * total_units
         total_retail = msrp * total_units
 
-        lines.append({
-            "style_raw":    style_raw,
-            "stock":        stock,
-            "color_code":   color_code,
-            "color_name":   color_name,
-            "description":  desc,
-            "cost":         cost,
-            "msrp":         msrp,
-            "discount":     discount,
-            "line_cost":    line_cost,
-            "sizes":        sizes,
-            "total_units":  total_units,
-            "total_cost":   total_cost,
-            "total_retail": total_retail,
-        })
+        # Check if we can merge with previous line (same style+color, row-per-size format)
+        key = stock + "|" + color_code
+        merged = False
+        if col_map.get("size") is not None and lines and size_val:
+            for existing in reversed(lines):
+                if existing["stock"] == stock and existing["color_code"] == color_code:
+                    # Merge sizes
+                    norm_size = normalize_size(size_val) if size_val else "OS"
+                    existing["sizes"][norm_size] = existing["sizes"].get(norm_size, 0) + qty_val
+                    existing["total_units"] += qty_val
+                    existing["total_cost"]   = existing["line_cost"] * existing["total_units"]
+                    existing["total_retail"] = existing["msrp"] * existing["total_units"]
+                    merged = True
+                    break
+
+        if not merged:
+            lines.append({
+                "style_raw":    style_raw,
+                "stock":        stock,
+                "color_code":   color_code,
+                "color_name":   color_name,
+                "description":  desc,
+                "cost":         cost,
+                "msrp":         msrp,
+                "discount":     discount,
+                "line_cost":    line_cost,
+                "sizes":        sizes,
+                "total_units":  total_units,
+                "total_cost":   total_cost,
+                "total_retail": total_retail,
+            })
 
     result["lines"] = lines
     return result

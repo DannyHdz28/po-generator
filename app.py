@@ -442,13 +442,17 @@ def parse_po_pdf(file_bytes):
     # ── Detect PDF format ────────────────────────────────────────
     # Format A (Fanatics): style code appears directly in table as column
     # Format B (Delaware North): style in "Code: BBC1517454-WBK" lines below item
+    # Format C (Dallas Cowboys): style "FDC1410291", size+color "2XL / WHT" in same line
 
     style_col_pattern = re.compile(r'^[A-Z]{3,6}\d{6,}-[A-Z]{2,4}$')
     code_line_pattern = re.compile(r'Code:\s+([A-Z]{3,6}\d{6,}-[A-Z]{2,4})')
+    style_nohyp_pat   = re.compile(r'\b([A-Z]{3,6}\d{6,})\b')
+    size_color_pat    = re.compile(r'\b(XXL|2XL|3XL|4XL|5XL|XS|XL|S|M|L)\s+/\s+([A-Z]+)\b')
     SIZE_RE = re.compile(r'^(XS|XXS|XXL|2XL|3XL|4XL|5XL|S|M|L|XL|OS|OSFA)$')
 
     has_code_lines = any(code_line_pattern.search(line) for line in text_lines)
     has_col_styles = any(style_col_pattern.match(w['text']) for w in all_words)
+    has_size_color = any(size_color_pat.search(line) for line in text_lines)
 
     product_lines = []
 
@@ -544,7 +548,61 @@ def parse_po_pdf(file_bytes):
                 elif abs(x-col_x["cost"]) <= COL_TOL and re.match(r'^\d+\.\d+$', t):
                     cost = float(t)
             if qty > 0:
-                product_lines.append({'style':style,'size':size,'qty':qty,'msrp':msrp,'cost':cost})
+                product_lines.append({'style':style,'size':size,'qty':qty,'msrp':msrp,'cost':cost,'desc':''})
+
+    elif has_size_color:
+        # ── Format C: Dallas Cowboys / "Style Id" + "Size / Color" in same line ──
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        for i, line in enumerate(text_lines):
+            m = re.match(r'Purchase Order\s+(PO\w+)', line)
+            if m and not result["po_number"]: result["po_number"] = m.group(1)
+            m = re.match(r'PO Date\s+(\S+)', line)
+            if m: result["po_date"] = m.group(1)
+            m = re.match(r'Cancel Date\s+(\S+)', line)
+            if m: result["cancel_date"] = m.group(1)
+            if line.strip() == 'Delivery Date' and i > 0:
+                prev = text_lines[i-1].strip()
+                if re.match(r'\d+/\d+/\d+', prev): result["ship_date"] = prev
+            if 'Vendor' in line and 'Delivery Address' in line and i+1 < len(text_lines):
+                parts = re.split(r'\s{2,}', text_lines[i+1])
+                if len(parts) >= 2: result["customer_name"] = parts[-1].strip()
+
+        # Customer — look for "Delivery Address" label then find value after it
+        if not result["customer_name"]:
+            for i, line in enumerate(text_lines):
+                if line.strip() == 'Delivery Address' and i+1 < len(text_lines):
+                    # Next line is the delivery address value
+                    val = text_lines[i+1].strip()
+                    if val and not re.match(r'[\d/]+', val) and len(val) > 3:
+                        result["customer_name"] = val
+                    break
+                # Also: "Vendor Delivery Address" on same line — value in NEXT line right part
+                if 'Vendor' in line and 'Delivery Address' in line and i+1 < len(text_lines):
+                    # Scan next lines for the delivery store name
+                    for nl in text_lines[i+1:i+5]:
+                        # Delivery address lines come AFTER vendor address
+                        # Look for a line that has a store name format (not PO info)
+                        if re.search(r'\bPro Shop\b|\bArena\b|\bWarehouse\b|\bStore\b|\bGalleria\b', nl, re.I):
+                            result["customer_name"] = nl.strip()
+                            break
+                    break
+
+        qty_re = re.compile(r'(\d+)\.00\s+EA')
+        for line in text_lines:
+            style_m = style_nohyp_pat.search(line)
+            sc_m    = size_color_pat.search(line)
+            if not style_m or not sc_m: continue
+            qty_m  = qty_re.search(line)
+            prices = re.findall(r'\d+\.\d{2}', line)
+            style  = style_m.group(1)
+            size   = sc_m.group(1).replace('XXL','2XL')
+            color  = sc_m.group(2)
+            qty    = int(qty_m.group(1)) if qty_m else 0
+            cost   = float(prices[1]) if len(prices) > 1 else (float(prices[0]) if prices else 0)
+            desc_m = re.match(r'^\d+\s+\d+\s+([A-Z][A-Z\s/]+?)\s+FDC', line)
+            desc   = desc_m.group(1).strip() if desc_m else ''
+            if qty > 0:
+                product_lines.append({'style':f"{style}-{color}",'size':size,'qty':qty,'cost':cost,'msrp':0,'desc':desc})
 
     # Group by style+color
     grouped = OrderedDict()
@@ -1299,5 +1357,3 @@ else:
         • Size break comprimido (Pro Standard HO)<br>
         • Cualquier formato con encabezado en Excel
         </div>""", unsafe_allow_html=True)
-
-    

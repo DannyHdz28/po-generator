@@ -493,6 +493,13 @@ def parse_po_pdf(file_bytes):
                 prev     = text_lines[i-1]
                 qty_m    = re.match(r'^(\d+)\s+', prev)
                 qty      = int(qty_m.group(1)) if qty_m else 0
+                # Description: text between qty and size (remove qty, size, prices)
+                desc = prev
+                if qty_m: desc = desc[qty_m.end():]
+                dollar_i = desc.find('$')
+                if dollar_i > 0: desc = desc[:dollar_i]
+                # Remove trailing size (last word like S, M, XL, XXL)
+                desc = re.sub(r'\s+(XXL|2XL|3XL|4XL|5XL|XS|XL|S|M|L)\s*$', '', desc).strip()
                 # Take LAST size before $ sign (avoids description words like SS, BLK)
                 dollar_i = prev.find('$')
                 before_dollar = prev[:dollar_i].strip() if dollar_i > 0 else prev
@@ -502,7 +509,7 @@ def parse_po_pdf(file_bytes):
                 cost     = float(prices[0]) if prices else 0
                 msrp     = float(prices[1]) if len(prices) > 1 else 0
                 if qty > 0:
-                    product_lines.append({'style':style,'size':size,'qty':qty,'cost':cost,'msrp':msrp})
+                    product_lines.append({'style':style,'size':size,'qty':qty,'cost':cost,'msrp':msrp,'desc':desc})
 
     elif has_col_styles:
         # ── Format A: Fanatics / style as column ──────────────
@@ -546,13 +553,15 @@ def parse_po_pdf(file_bytes):
         if k not in grouped:
             grouped[k] = {
                 'style': k, 'sizes': {}, 'cost': pl['cost'],
-                'msrp': pl['msrp'], 'total': 0
+                'msrp': pl['msrp'], 'total': 0, 'desc': pl.get('desc','')
             }
         sz = pl['size'] or 'OS'
         grouped[k]['sizes'][sz] = grouped[k]['sizes'].get(sz, 0) + pl['qty']
         grouped[k]['total'] += pl['qty']
         if not grouped[k]['cost'] and pl['cost']:
             grouped[k]['cost'] = pl['cost']
+        if not grouped[k]['desc'] and pl.get('desc'):
+            grouped[k]['desc'] = pl['desc']
 
     # Convert to standard line format
     for data in grouped.values():
@@ -569,7 +578,7 @@ def parse_po_pdf(file_bytes):
         result["lines"].append({
             'style_raw': data['style'], 'stock': stock,
             'color_code': cc, 'color_name': cn,
-            'description': '', 'cost': data['cost'], 'msrp': data['msrp'],
+            'description': data.get('desc',''), 'cost': data['cost'], 'msrp': data['msrp'],
             'discount': 0, 'line_cost': line_cost,
             'sizes': sizes, 'total_units': total_units,
             'total_cost': line_cost * total_units,
@@ -1290,3 +1299,5 @@ else:
         • Size break comprimido (Pro Standard HO)<br>
         • Cualquier formato con encabezado en Excel
         </div>""", unsafe_allow_html=True)
+
+    

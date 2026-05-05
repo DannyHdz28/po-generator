@@ -439,59 +439,105 @@ def parse_po_pdf(file_bytes):
         "source":        "pdf",
     }
 
-    # ── Product table extraction using X-position columns ─────
-    # Detect column X positions from the table header row
-    style_pattern_re = re.compile(r'^[A-Z]{3,6}\d{6,}-[A-Z]{2,4}$')
+    # ── Detect PDF format ────────────────────────────────────────
+    # Format A (Fanatics): style code appears directly in table as column
+    # Format B (Delaware North): style in "Code: BBC1517454-WBK" lines below item
+
+    style_col_pattern = re.compile(r'^[A-Z]{3,6}\d{6,}-[A-Z]{2,4}$')
+    code_line_pattern = re.compile(r'Code:\s+([A-Z]{3,6}\d{6,}-[A-Z]{2,4})')
     SIZE_RE = re.compile(r'^(XS|XXS|XXL|2XL|3XL|4XL|5XL|S|M|L|XL|OS|OSFA)$')
 
-    # Find column positions dynamically from header row
-    col_x = {"style": 399, "size": 620, "qty": 691, "msrp": 724, "cost": 764}
-
-    # Try to detect column positions from the table header
-    for key in sorted_keys:
-        ws = sorted(lines_dict[key], key=lambda w: w['x0'])
-        texts = [w['text'].upper() for w in ws]
-        line = ' '.join(texts)
-        if 'VENDOR STYLE' in line and ('SIZE' in line or 'QTY' in line or 'PURCH QTY' in line):
-            for w in ws:
-                t = w['text'].upper()
-                if matches_any(t, GLOSSARY["col_style"]):   col_x["style"] = w['x0']
-                if matches_any(t, ["SIZE"]):                col_x["size"]  = w['x0']
-                if matches_any(t, GLOSSARY["col_qty"]):     col_x["qty"]   = w['x0']
-                if matches_any(t, GLOSSARY["col_msrp"]):    col_x["msrp"]  = w['x0']
-                if matches_any(t, GLOSSARY["col_cost"]):    col_x["cost"]  = w['x0']
-            break
-
-    COL_TOL = 25  # px tolerance for column matching
+    has_code_lines = any(code_line_pattern.search(line) for line in text_lines)
+    has_col_styles = any(style_col_pattern.match(w['text']) for w in all_words)
 
     product_lines = []
-    for key in sorted_keys:
-        ws = sorted(lines_dict[key], key=lambda w: w['x0'])
 
-        # Find style code in this line
-        style_w = next((w for w in ws if style_pattern_re.match(w['text'])), None)
-        if not style_w: continue
+    if has_code_lines:
+        # ── Format B: Delaware North / "Code:" style ──────────
+        # Also update header: PO# from "#NNNN" line
+        # Reset header — Delaware North has its own format, override generic parsing
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        for line in text_lines:
+            # PO# from "#NNNN" line
+            m = re.match(r'^#(\d+)$', line.strip())
+            if m and not result["po_number"]:
+                result["po_number"] = m.group(1)
+            # Dates from "Ship Date  Cancel Date  Buyer" header row
+            if 'Ship Date' in line and 'Cancel Date' in line and 'Buyer' in line:
+                idx = text_lines.index(line)
+                if idx+1 < len(text_lines):
+                    parts = text_lines[idx+1].split()
+                    if len(parts) >= 1 and re.match(r'\d+/\d+/\d+', parts[0]):
+                        result["ship_date"]   = parts[0]
+                        if len(parts) >= 2: result["cancel_date"] = parts[1]
+                        if len(parts) >= 3: result["buyer"]       = ' '.join(parts[2:])
+            # Customer from "Vendor  Ship To  Bill To" header — use X positions
+            if 'Bill To' in line and 'Ship To' in line and 'Vendor' in line:
+                idx = text_lines.index(line)
+                if idx+1 < len(text_lines):
+                    next_key = sorted_keys[idx+1]
+                    next_words = sorted(lines_dict[next_key], key=lambda w: w['x0'])
+                    # Bill To is the rightmost column (x > 280)
+                    bill_to_words = [w['text'] for w in next_words if w['x0'] > 280]
+                    if bill_to_words:
+                        result["customer_name"] = ' '.join(bill_to_words).strip()
+                    ship_to_words = [w['text'] for w in next_words if 140 < w['x0'] <= 280]
+                    if ship_to_words:
+                        result["ship_to"] = ' '.join(ship_to_words).strip()
 
-        style = style_w['text']
-        size = ''; qty = 0; msrp = 0.0; cost = 0.0
+        price_re = re.compile(r'\$(\d+\.\d{2})')
+        for i, line in enumerate(text_lines):
+            code_match = code_line_pattern.search(line) if i > 0 else None
+            if code_match:
+                style    = code_match.group(1)
+                prev     = text_lines[i-1]
+                qty_m    = re.match(r'^(\d+)\s+', prev)
+                qty      = int(qty_m.group(1)) if qty_m else 0
+                # Take LAST size before $ sign (avoids description words like SS, BLK)
+                dollar_i = prev.find('$')
+                before_dollar = prev[:dollar_i].strip() if dollar_i > 0 else prev
+                size_all = re.findall(r'\b(XXL|2XL|3XL|4XL|5XL|XS|S|M|L|XL|OS)\b', before_dollar)
+                size     = size_all[-1].replace('XXL','2XL') if size_all else ''
+                prices   = price_re.findall(prev)
+                cost     = float(prices[0]) if prices else 0
+                msrp     = float(prices[1]) if len(prices) > 1 else 0
+                if qty > 0:
+                    product_lines.append({'style':style,'size':size,'qty':qty,'cost':cost,'msrp':msrp})
 
-        for w in ws:
-            t = w['text']
-            x = w['x0']
-            if abs(x - col_x["size"]) <= COL_TOL and SIZE_RE.match(t.upper()):
-                size = t.upper().replace('XXL','2XL')
-            elif abs(x - col_x["qty"]) <= COL_TOL and re.match(r'^\d+$', t):
-                qty = int(t)
-            elif abs(x - col_x["msrp"]) <= COL_TOL and re.match(r'^\d+\.\d+$', t):
-                msrp = float(t)
-            elif abs(x - col_x["cost"]) <= COL_TOL and re.match(r'^\d+\.\d+$', t):
-                cost = float(t)
-
-        if qty > 0:
-            product_lines.append({
-                'style': style, 'size': size,
-                'qty': qty, 'msrp': msrp, 'cost': cost
-            })
+    elif has_col_styles:
+        # ── Format A: Fanatics / style as column ──────────────
+        col_x = {"style": 399, "size": 620, "qty": 691, "msrp": 724, "cost": 764}
+        for key in sorted_keys:
+            ws = sorted(lines_dict[key], key=lambda w: w['x0'])
+            texts = [w['text'].upper() for w in ws]
+            line  = ' '.join(texts)
+            if 'VENDOR STYLE' in line and ('SIZE' in line or 'QTY' in line):
+                for w in ws:
+                    t = w['text'].upper()
+                    if matches_any(t, GLOSSARY["col_style"]):   col_x["style"] = w['x0']
+                    if matches_any(t, ["SIZE"]):                col_x["size"]  = w['x0']
+                    if matches_any(t, GLOSSARY["col_qty"]):     col_x["qty"]   = w['x0']
+                    if matches_any(t, GLOSSARY["col_msrp"]):    col_x["msrp"]  = w['x0']
+                    if matches_any(t, GLOSSARY["col_cost"]):    col_x["cost"]  = w['x0']
+                break
+        COL_TOL = 25
+        for key in sorted_keys:
+            ws = sorted(lines_dict[key], key=lambda w: w['x0'])
+            style_w = next((w for w in ws if style_col_pattern.match(w['text'])), None)
+            if not style_w: continue
+            style = style_w['text']; size = ''; qty = 0; msrp = 0.0; cost = 0.0
+            for w in ws:
+                t = w['text']; x = w['x0']
+                if abs(x-col_x["size"]) <= COL_TOL and SIZE_RE.match(t.upper()):
+                    size = t.upper().replace('XXL','2XL')
+                elif abs(x-col_x["qty"]) <= COL_TOL and re.match(r'^\d+$', t):
+                    qty = int(t)
+                elif abs(x-col_x["msrp"]) <= COL_TOL and re.match(r'^\d+\.\d+$', t):
+                    msrp = float(t)
+                elif abs(x-col_x["cost"]) <= COL_TOL and re.match(r'^\d+\.\d+$', t):
+                    cost = float(t)
+            if qty > 0:
+                product_lines.append({'style':style,'size':size,'qty':qty,'msrp':msrp,'cost':cost})
 
     # Group by style+color
     grouped = OrderedDict()

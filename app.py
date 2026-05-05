@@ -59,10 +59,10 @@ GLOSSARY = {
     ],
     "customer_name": [
         # Glosario: Buyer, Bill-to Name, Account Name, Cliente
+        # NOTE: "BILL TO" intentionally excluded here — handled by special block in parser
+        # to avoid false positives (Kings PO has "BILL TO:" with PO name on same row)
         "CUSTOMER NAME","SOLD TO","ACCOUNT NAME",
-        "BILL TO","BILL-TO","BILLED TO",
-        "CLIENT","ACCOUNT","COMPANY",
-        "BUYER NAME","BILL TO NAME",
+        "BILLED TO","CLIENT","BUYER NAME","BILL TO NAME",
         "RAZON SOCIAL","COMPRADOR","CONSIGNATARIO",
     ],
     "customer_code": [
@@ -211,12 +211,23 @@ def matches_any(text, keywords):
             return True
     return False
 
-def detect_col(header_row, keywords):
+def detect_col(header_row, keywords, exact_only=False):
+    """Find column index. Prefers exact match over contains match.
+    If exact_only=True, only returns exact matches (used for size columns)."""
+    exact_match = None
+    contains_match = None
     for i, cell in enumerate(header_row):
         c = cell_str(cell)
-        if c and matches_any(c, keywords):
-            return i
-    return None
+        if not c:
+            continue
+        for kw in keywords:
+            k = kw.upper().strip()
+            if c == k and exact_match is None:
+                exact_match = i
+                break
+            elif not exact_only and k in c and contains_match is None:
+                contains_match = i
+    return exact_match if exact_match is not None else (None if exact_only else contains_match)
 
 def normalize_size(s):
     u = str(s).upper().strip()
@@ -268,6 +279,13 @@ def parse_size_break_compressed(cell_value):
             sizes[sz] = numbers[i]
     return sizes
 
+# Labels that should never be returned as values
+_LABEL_WORDS = {
+    "PO NUMBER","PO NAME","PO DATE","PO#","SHIP DATE","CANCEL DATE",
+    "BILL TO","SHIP TO","VENDOR","BRAND","BUYER","TERMS","CURRENCY",
+    "DESCRIPTION","STYLE","QTY","COST","RETAIL","MSRP","UPC",
+}
+
 def find_header_raw(rows, keywords, max_rows=25):
     for row in rows[:max_rows]:
         for j, cell in enumerate(row):
@@ -280,8 +298,15 @@ def find_header_raw(rows, keywords, max_rows=25):
                         return after
                 for k in range(j+1, min(j+5, len(row))):
                     v = row[k]
-                    if v is not None and str(v).strip() not in ("", "0", "None"):
-                        return v
+                    if v is None:
+                        continue
+                    vs = str(v).strip()
+                    if vs in ("", "0", "None"):
+                        continue
+                    # Skip values that look like column labels
+                    if vs.upper() in _LABEL_WORDS:
+                        continue
+                    return v
     return None
 
 def find_header_value(rows, keywords, max_rows=25):
@@ -327,20 +352,25 @@ def parse_po_excel(file_bytes):
     result["cancel_date"] = fmtDate(find_header_value(rows, GLOSSARY["cancel_date"]))
     result["terms"]       = find_header_value(rows, GLOSSARY["terms"])
 
+    # Customer name — first try generic labels, then special BILL TO block
     customer_name = find_header_value(rows, GLOSSARY["customer_name"])
     if not customer_name:
         for i, row in enumerate(rows[:15]):
             for j, cell in enumerate(row):
                 c = cell_str(cell)
                 if c in ("BILL TO:","BILL TO","SOLD TO:","SOLD TO"):
+                    # Value is on the NEXT ROW at same column (Kings format)
+                    # or after colon on same cell
                     raw = str(cell).strip()
                     if ":" in raw:
                         after = raw.split(":",1)[1].strip()
-                        if after and len(after) > 2:
+                        # Make sure it's not just another label
+                        if after and len(after) > 2 and after.upper() not in _LABEL_WORDS:
                             customer_name = after; break
+                    # Next row same column
                     if i+1 < len(rows) and j < len(rows[i+1]):
                         v = str(rows[i+1][j] or "").strip()
-                        if v and len(v) > 2:
+                        if v and len(v) > 2 and v.upper() not in _LABEL_WORDS:
                             customer_name = v; break
             if customer_name:
                 break
@@ -393,7 +423,7 @@ def parse_po_excel(file_bytes):
             col_map["total_cost"]   = detect_col(row, GLOSSARY["col_total_cost"])
             col_map["total_retail"] = detect_col(row, GLOSSARY["col_total_retail"])
             for sz_key in SIZE_KEY_MAP:
-                col_map[sz_key] = detect_col(row, GLOSSARY[sz_key])
+                col_map[sz_key] = detect_col(row, GLOSSARY[sz_key], exact_only=True)
             break
 
     if data_header_row is None:
@@ -581,6 +611,16 @@ def generate_order_form(data):
         ws.cell(row=r, column=cl, value=label).font = lf
         ws.cell(row=r, column=cv, value=value).font = vf
 
+    # Get discount % from first line that has one
+    disc_pct = 0.0
+    for l in data["lines"]:
+        if l.get("discount"):
+            disc_pct = l["discount"]
+            break
+    disc_label = f'{disc_pct*100:.0f}%' if disc_pct else ""
+    cost_w_disc_header = f"COST W/DISCOUNT {disc_label}".strip()
+
+    # Match ORDER_FORM.xlsx template exactly
     wlv(1,1,"Customer code:",2,data.get("customer_code",""))
     ws.cell(row=1,column=5,value="Vendor:").font=lf
     ws.cell(row=1,column=6,value="Maxima Apparel Corp SAPI de CV").font=vf
@@ -592,18 +632,19 @@ def generate_order_form(data):
     wlv(5,1,"PO Number:",2,data.get("po_number",""))
     wlv(6,1,"PO Creation Date:",2,data.get("po_date",""))
     wlv(8,1,"Ship Date:",2,data.get("ship_date",""))
-    wlv(8,5,"Terms:",6,data.get("terms",""))
     wlv(9,1,"Cancel Date:",2,data.get("cancel_date",""))
     ws.cell(row=9,column=5,value="Total cost:").font=lf
     ws.cell(row=9,column=6,value=round(totC,2)).font=vf
     ws.cell(row=10,column=5,value="Total qty:").font=lf
     ws.cell(row=10,column=6,value=totU).font=vf
-    wlv(11,1,"Buyer:",2,data.get("buyer",""))
     ws.cell(row=11,column=5,value="Currency:").font=lf
     ws.cell(row=11,column=6,value=data.get("currency","USD")).font=vf
+    ws.cell(row=12,column=5,value="Discount %:").font=lf
+    ws.cell(row=12,column=6,value=disc_label).font=vf
 
     COLS = ["BRAND","STOCK","COLOR CODE","COLOR NAME","DESCRIPTION","CURRENCY",
-            "LINE COST","MSRP","OS","XXS","XS","S","M","L","XL","2XL","3XL",
+            "LINE COST", cost_w_disc_header, "MSRP",
+            "OS","XXS","XS","S","M","L","XL","2XL","3XL",
             "TOTAL UNITS","TOTAL COST","TOTAL RETAIL"]
     for j, cn in enumerate(COLS, start=1):
         c = ws.cell(row=13, column=j, value=cn)
@@ -615,7 +656,9 @@ def generate_order_form(data):
         s = line["sizes"]
         rd = ["PRO STANDARD", line["stock"], line["color_code"], line["color_name"],
               line["description"], data.get("currency","USD"),
-              round(line["line_cost"],2), round(line["msrp"],2),
+              round(line["cost"],2),        # LINE COST = costo bruto
+              round(line["line_cost"],2),   # COST W/DISCOUNT = costo neto
+              round(line["msrp"],2),
               s.get("OS",0), s.get("XXS",0), s.get("XS",0),
               s.get("S",0), s.get("M",0), s.get("L",0),
               s.get("XL",0), s.get("2XL",0), s.get("3XL",0),
@@ -625,7 +668,7 @@ def generate_order_form(data):
             c.font = vf
             c.alignment = Alignment(horizontal="center" if j > 5 else "left")
 
-    for i, w in enumerate([14,20,11,14,42,9,10,8,6,6,6,6,6,6,6,6,6,12,12,12], start=1):
+    for i, w in enumerate([14,20,11,14,42,9,10,14,8,6,6,6,6,6,6,6,6,6,12,12,12], start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     output = io.BytesIO()

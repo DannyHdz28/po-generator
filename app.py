@@ -99,7 +99,7 @@ GLOSSARY = {
     "col_desc": [
         # Glosario: Item Description, Product Name, Article Description
         "ITEM DESCRIPTION","ITEM DESC","DESCRIPTION","DESC",
-        "PRODUCT NAME","PRODUCT DESCRIPTION","ARTICLE DESCRIPTION",
+        "PRODUCT NAME","PRODUCT TITLE","PRODUCT DESCRIPTION","ARTICLE DESCRIPTION",
         "DETALLE DEL PRODUCTO","DESCRIPCION DEL ARTICULO",
     ],
     "col_color": [
@@ -217,9 +217,9 @@ def cell_str(v):
     return s.upper().strip()
 
 def matches_any(text, keywords):
-    t = text.upper().strip()
+    t = text.upper().strip().rstrip(":")  # strip trailing colon for label matching
     for kw in keywords:
-        k = kw.upper().strip()
+        k = kw.upper().strip().rstrip(":")
         if t == k or t.startswith(k) or k in t:
             return True
     return False
@@ -345,6 +345,199 @@ def find_header_value(rows, keywords, max_rows=25):
         return v
     return str(v).strip()
 
+
+# ══════════════════════════════════════════════════════════════
+# PDF PARSER — uses pdfplumber, no API key needed
+# Works for PDFs with real text (not scanned images)
+# ══════════════════════════════════════════════════════════════
+
+def parse_po_pdf(file_bytes):
+    """Parse a PDF purchase order using pdfplumber."""
+    try:
+        import pdfplumber
+    except ImportError:
+        return {"po_number":"","po_date":"","ship_date":"","cancel_date":"",
+                "customer_name":"","customer_code":"","ship_to":"","bill_to":"",
+                "terms":"","currency":"USD","lines":[],
+                "warnings":["⚠️ pdfplumber no instalado. Corre: pip install pdfplumber"]}
+
+    from collections import defaultdict, OrderedDict
+
+    all_words = []
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                for w in page.extract_words():
+                    all_words.append({
+                        'page': page_num, 'x0': w['x0'],
+                        'top': w['top'], 'text': w['text']
+                    })
+    except Exception as e:
+        return {"po_number":"","po_date":"","ship_date":"","cancel_date":"",
+                "customer_name":"","customer_code":"","ship_to":"","bill_to":"",
+                "terms":"","currency":"USD","lines":[],
+                "warnings":[f"⚠️ No se pudo leer el PDF: {e}"]}
+
+    if not all_words:
+        return {"po_number":"","po_date":"","ship_date":"","cancel_date":"",
+                "customer_name":"","customer_code":"","ship_to":"","bill_to":"",
+                "terms":"","currency":"USD","lines":[],
+                "warnings":["⚠️ El PDF no tiene texto extraíble (puede ser escaneado)."]}
+
+    # Group words into lines by page+top (within 2px)
+    lines_dict = defaultdict(list)
+    for w in all_words:
+        key = (w['page'], round(w['top']/2)*2)
+        lines_dict[key].append(w)
+    sorted_keys = sorted(lines_dict.keys())
+
+    # Build text lines
+    text_lines = []
+    for key in sorted_keys:
+        ws = sorted(lines_dict[key], key=lambda w: w['x0'])
+        text_lines.append(' '.join(w['text'] for w in ws))
+
+    # ── Header extraction ──────────────────────────────────────
+    PDF_STOPS = [
+        'Vendor:','Ship To:','Bill To:','PO Number:','PO Class:',
+        'Version:','Last Submitted','Promised','Currency:','Total Qty:',
+        'Total Cost:','DamageAllowance:','Buyer:','Phone:','Ship Via:',
+        'Terms:','Cancel Date:','Ship Date:','Attn:','Special Instructions:'
+    ]
+    def find_pdf_val(lines, keywords):
+        for line in lines:
+            up = line.upper()
+            for kw in keywords:
+                idx = up.find(kw.upper())
+                if idx != -1:
+                    after = line[idx+len(kw):].strip().lstrip(':').strip()
+                    # Stop at next known label
+                    for stop in PDF_STOPS:
+                        si = after.upper().find(stop.upper())
+                        if si > 0:
+                            after = after[:si].strip()
+                    # Stop at 3+ spaces
+                    after = re.split(r'\s{3,}', after)[0].strip()
+                    if after and len(after) > 0:
+                        return after
+        return ''
+
+    result = {
+        "po_number":     find_pdf_val(text_lines, [kw for kw in GLOSSARY["po_number"]]),
+        "po_date":       find_pdf_val(text_lines, [kw for kw in GLOSSARY["po_date"]]),
+        "ship_date":     find_pdf_val(text_lines, [kw for kw in GLOSSARY["ship_date"]]),
+        "cancel_date":   find_pdf_val(text_lines, [kw for kw in GLOSSARY["cancel_date"]]),
+        "customer_name": find_pdf_val(text_lines, ["Bill To:", "Sold To:", "Customer:"]),
+        "customer_code": "",
+        "ship_to":       find_pdf_val(text_lines, ["Ship To:", "Delivery Address:"]),
+        "bill_to":       find_pdf_val(text_lines, ["Bill To:"]),
+        "buyer":         find_pdf_val(text_lines, ["Buyer:"]),
+        "terms":         find_pdf_val(text_lines, ["Terms:"]),
+        "currency":      find_pdf_val(text_lines, ["Currency:"]) or "USD",
+        "lines":         [],
+        "warnings":      [],
+        "source":        "pdf",
+    }
+
+    # ── Product table extraction using X-position columns ─────
+    # Detect column X positions from the table header row
+    style_pattern_re = re.compile(r'^[A-Z]{3,6}\d{6,}-[A-Z]{2,4}$')
+    SIZE_RE = re.compile(r'^(XS|XXS|XXL|2XL|3XL|4XL|5XL|S|M|L|XL|OS|OSFA)$')
+
+    # Find column positions dynamically from header row
+    col_x = {"style": 399, "size": 620, "qty": 691, "msrp": 724, "cost": 764}
+
+    # Try to detect column positions from the table header
+    for key in sorted_keys:
+        ws = sorted(lines_dict[key], key=lambda w: w['x0'])
+        texts = [w['text'].upper() for w in ws]
+        line = ' '.join(texts)
+        if 'VENDOR STYLE' in line and ('SIZE' in line or 'QTY' in line or 'PURCH QTY' in line):
+            for w in ws:
+                t = w['text'].upper()
+                if matches_any(t, GLOSSARY["col_style"]):   col_x["style"] = w['x0']
+                if matches_any(t, ["SIZE"]):                col_x["size"]  = w['x0']
+                if matches_any(t, GLOSSARY["col_qty"]):     col_x["qty"]   = w['x0']
+                if matches_any(t, GLOSSARY["col_msrp"]):    col_x["msrp"]  = w['x0']
+                if matches_any(t, GLOSSARY["col_cost"]):    col_x["cost"]  = w['x0']
+            break
+
+    COL_TOL = 25  # px tolerance for column matching
+
+    product_lines = []
+    for key in sorted_keys:
+        ws = sorted(lines_dict[key], key=lambda w: w['x0'])
+
+        # Find style code in this line
+        style_w = next((w for w in ws if style_pattern_re.match(w['text'])), None)
+        if not style_w: continue
+
+        style = style_w['text']
+        size = ''; qty = 0; msrp = 0.0; cost = 0.0
+
+        for w in ws:
+            t = w['text']
+            x = w['x0']
+            if abs(x - col_x["size"]) <= COL_TOL and SIZE_RE.match(t.upper()):
+                size = t.upper().replace('XXL','2XL')
+            elif abs(x - col_x["qty"]) <= COL_TOL and re.match(r'^\d+$', t):
+                qty = int(t)
+            elif abs(x - col_x["msrp"]) <= COL_TOL and re.match(r'^\d+\.\d+$', t):
+                msrp = float(t)
+            elif abs(x - col_x["cost"]) <= COL_TOL and re.match(r'^\d+\.\d+$', t):
+                cost = float(t)
+
+        if qty > 0:
+            product_lines.append({
+                'style': style, 'size': size,
+                'qty': qty, 'msrp': msrp, 'cost': cost
+            })
+
+    # Group by style+color
+    grouped = OrderedDict()
+    for pl in product_lines:
+        k = pl['style']
+        if k not in grouped:
+            grouped[k] = {
+                'style': k, 'sizes': {}, 'cost': pl['cost'],
+                'msrp': pl['msrp'], 'total': 0
+            }
+        sz = pl['size'] or 'OS'
+        grouped[k]['sizes'][sz] = grouped[k]['sizes'].get(sz, 0) + pl['qty']
+        grouped[k]['total'] += pl['qty']
+        if not grouped[k]['cost'] and pl['cost']:
+            grouped[k]['cost'] = pl['cost']
+
+    # Convert to standard line format
+    for data in grouped.values():
+        stock, cc, cn = parse_style_color(data['style'])
+        sizes = {s: 0 for s in SIZE_ORDER}
+        for sz, qty in data['sizes'].items():
+            norm = normalize_size(sz)
+            if norm in sizes:
+                sizes[norm] = qty
+            else:
+                sizes[sz] = qty
+        total_units = data['total']
+        line_cost   = data['cost']
+        result["lines"].append({
+            'style_raw': data['style'], 'stock': stock,
+            'color_code': cc, 'color_name': cn,
+            'description': '', 'cost': data['cost'], 'msrp': data['msrp'],
+            'discount': 0, 'line_cost': line_cost,
+            'sizes': sizes, 'total_units': total_units,
+            'total_cost': line_cost * total_units,
+            'total_retail': data['msrp'] * total_units,
+        })
+
+    if not result["lines"]:
+        result["warnings"].append(
+            "⚠️ No se detectaron líneas de producto. "
+            "Verifica que el PDF tenga texto (no sea escaneado) o contacta soporte."
+        )
+
+    return result
+
 # ══════════════════════════════════════════════════════════════
 # PARSER PRINCIPAL
 # ══════════════════════════════════════════════════════════════
@@ -447,6 +640,19 @@ def parse_po_excel(file_bytes):
     # Fallback to generic glossary if not found — search full header (up to 60 rows)
     if not customer_name:
         customer_name = find_header_value(rows, GLOSSARY["customer_name"], max_rows=60)
+    # Last resort: extract from title row containing "PURCHASE ORDER"
+    if not customer_name:
+        for row in rows[:3]:
+            for cell in row:
+                if cell and "PURCHASE ORDER" in str(cell).upper():
+                    raw = str(cell).strip().lstrip("'")
+                    # Remove "PURCHASE ORDER FORM" suffix
+                    name = re.sub(r"PURCHASE ORDER.*", "", raw, flags=re.IGNORECASE).strip()
+                    if name and len(name) > 3:
+                        customer_name = name
+                        break
+            if customer_name:
+                break
     result["customer_name"] = customer_name
     result["customer_code"] = find_header_value(rows, GLOSSARY["customer_code"])
 
@@ -936,11 +1142,16 @@ st.divider()
 col1, col2 = st.columns([1, 2])
 with col1:
     st.markdown('<p class="section-title">📋 Orden del Cliente</p>', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Arrastra o selecciona", type=["xlsx","xls"], label_visibility="collapsed")
+    uploaded_file = st.file_uploader("Arrastra o selecciona", type=["xlsx","xls","pdf"], label_visibility="collapsed")
 
 if uploaded_file:
     with st.spinner("Leyendo archivo..."):
-        data = parse_po_excel(uploaded_file.read())
+        file_bytes = uploaded_file.read()
+        ext = uploaded_file.name.split('.')[-1].lower()
+        if ext == 'pdf':
+            data = parse_po_pdf(file_bytes)
+        else:
+            data = parse_po_excel(file_bytes)
 
     for w in data.get("warnings", []):
         st.markdown(f'<div class="warn-box">{w}</div>', unsafe_allow_html=True)

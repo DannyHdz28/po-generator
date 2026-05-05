@@ -59,10 +59,10 @@ GLOSSARY = {
     ],
     "customer_name": [
         # Glosario: Buyer, Bill-to Name, Account Name, Cliente
-        # NOTE: "BILL TO" intentionally excluded here — handled by special block in parser
-        # to avoid false positives (Kings PO has "BILL TO:" with PO name on same row)
+        # NOTE: "BILL TO" handled by special block below — NOT here
+        # Boom usa "Bill To Name" as a label:value pair
         "CUSTOMER NAME","SOLD TO","ACCOUNT NAME",
-        "BILLED TO","CLIENT","BUYER NAME","BILL TO NAME",
+        "BILLED TO","CLIENT","BILL TO NAME",
         "RAZON SOCIAL","COMPRADOR","CONSIGNATARIO",
     ],
     "customer_code": [
@@ -89,11 +89,11 @@ GLOSSARY = {
         # Glosario: Style Number, Style Code, Vendor Item Number, Model Number
         # Visto: Vendor Style No. (Kings), Style Number (Fitters), Vendor Item Number (Caesars)
         "VENDOR STYLE NO.","VENDOR STYLE NO","VENDOR STYLE NUMBER",
-        "VENDOR STYLE","STYLE ID","STYLE #","STYLE NO","STYLE NO.",
-        "STYLE NUMBER","STYLE CODE","STOCK","ITEM #","ITEM NUMBER",
-        "ITEM NO","SKU","SKU#","PRODUCT CODE","STYLE",
-        "VENDOR ITEM NUMBER","VENDOR ITEM","ARTICLE",
-        "MODEL NUMBER","MANUFACTURER CODE",
+        "VENDOR STYLE#","VENDOR STYLE #","VENDOR STYLE","STYLE ID",
+        "STYLE #","STYLE NO","STYLE NO.","STYLE NUMBER","STYLE CODE",
+        "STOCK","ITEM #","ITEM NUMBER","ITEM NO","SKU","SKU#",
+        "PRODUCT CODE","STYLE","VENDOR ITEM NUMBER","VENDOR ITEM",
+        "ARTICLE","MODEL NUMBER","MANUFACTURER CODE",
         "ESTILO","REFERENCIA DEL PROVEEDOR",
     ],
     "col_desc": [
@@ -118,15 +118,17 @@ GLOSSARY = {
         # Glosario: Total Qty, Total Pieces, Total Units, Sum of Qty
         "QTY","QUANTITY","PURCH QTY","ORDER QTY",
         "UNITS","# UNITS","PIECES","PCS",
-        "TOTAL QTY","TOTAL UNITS","TTL UNITS","TTL QTY",
-        "TOTAL PIECES","SUM OF QTY",
+        "TTL UNITS","TTL QTY","TOTAL PIECES","SUM OF QTY",
     ],
     "col_cost": [
         # Glosario: Net cost, Unit cost, Price Per Unit, Wholesale net
-        # Visto: "Price Per Unit" (Fitters), "Cost W/ Disc" (Kings), "Unit Cost" (Caesars), "Cost" (Dallas Cowboys)
-        "COST W/ DISC","COST W/DISC","COST WITH DISCOUNT",
+        # Priority: net/discounted cost first, then gross cost
+        # Visto: "Cost W/ Disc" (Kings), "Cost W/DISC." (Black Knights),
+        #        "Price Per Unit" (Fitters), "Unit Cost" (Caesars), "Cost" (Dallas Cowboys)
+        "COST W/ DISC","COST W/DISC","COST W/DISC.","COST WITH DISCOUNT",
         "NET COST","NET UNIT COST","UNIT COST","UNIT PRICE",
         "PRICE PER UNIT","WHOLESALE NET","DISCOUNTED PRICE",
+        "SALE PRICE",  # Boom format: Sale Price = net cost
         "WHOLESALE","COST","WS","PRICE",
         "COSTO NETO","PRECIO NETO","COSTO UNITARIO","MAYOREO NETO",
     ],
@@ -140,7 +142,8 @@ GLOSSARY = {
     "col_total_cost": [
         # Glosario: Extended Cost, Ext Cost, Line Total, Total Dollars
         "TOTAL DOLLARS","EXT COST","EXTENDED COST","LINE TOTAL",
-        "TOTAL COST","SUBTOTAL","COSTO EXTENDIDO","COSTO POR RENGLON",
+        "TOTAL COST","SUBTOTAL","LINE TOTAL","TOT. BUY",  # USSF format
+        "COSTO EXTENDIDO","COSTO POR RENGLON",
     ],
     "col_total_retail": [
         # Glosario: Ext Retail, Retail Total, Sales Value
@@ -148,6 +151,7 @@ GLOSSARY = {
         "TOTAL RETAIL","RETAIL TOTAL","SALES VALUE","VALOR DE VENTA",
     ],
     "col_discount": [
+        # Only pure percentage/rate columns — NOT cost columns
         "DISC %","DISCOUNT %","DISC","DISCOUNT","OFF %","DESCUENTO",
     ],
     "col_upc": [
@@ -168,13 +172,18 @@ GLOSSARY = {
     "size_xl":  ["XL","X-LARGE","X/L","XLARGE"],
     "size_2xl": ["2XL","XXL","2X","XX","2X-LARGE","2X LARGE","DOUBLE XL"],
     "size_3xl": ["3XL","XXXL","3X","3X-LARGE","3X LARGE","TRIPLE XL"],
+    "size_4xl": ["4XL","XXXXL","4X","4X-LARGE","4X LARGE"],
+    "size_5xl": ["5XL","XXXXXL","5X","5X-LARGE","5X LARGE"],
+    "size_4xl": ["4XL","XXXXL","4X","4X-LARGE","4X LARGE"],
+    "size_5xl": ["5XL","XXXXXL","5X","5X-LARGE","5X LARGE"],
 }
 
-SIZE_ORDER   = ["OS","XXS","XS","S","M","L","XL","2XL","3XL"]
+SIZE_ORDER   = ["OS","XXS","XS","S","M","L","XL","2XL","3XL","4XL","5XL"]
 SIZE_KEY_MAP = {
     "size_os":"OS","size_xxs":"XXS","size_xs":"XS",
     "size_s":"S","size_m":"M","size_l":"L",
     "size_xl":"XL","size_2xl":"2XL","size_3xl":"3XL",
+    "size_4xl":"4XL","size_5xl":"5XL",
 }
 SIZE_NORMALIZE = {
     "OSFA":"OS","OSFM":"OS","ONE SIZE":"OS","O/S":"OS","ONE-SIZE":"OS",
@@ -186,6 +195,8 @@ SIZE_NORMALIZE = {
     "XL":"XL","X-LARGE":"XL","X/L":"XL","XLARGE":"XL","EXTRA LARGE":"XL",
     "2XL":"2XL","XXL":"2XL","2X":"2XL","XX":"2XL","2X-LARGE":"2XL","2X LARGE":"2XL",
     "3XL":"3XL","XXXL":"3XL","3X":"3XL","3X-LARGE":"3XL","3X LARGE":"3XL",
+    "4XL":"4XL","XXXXL":"4XL","4X":"4XL","4X-LARGE":"4XL","4X LARGE":"4XL",
+    "5XL":"5XL","XXXXXL":"5XL","5X":"5XL","5X-LARGE":"5XL","5X LARGE":"5XL",
 }
 COLOR_CODES = {
     "BLK":"BLACK","WHT":"WHITE","NVY":"NAVY","RED":"RED","BLU":"BLUE",
@@ -201,7 +212,9 @@ COLOR_CODES = {
 # ══════════════════════════════════════════════════════════════
 
 def cell_str(v):
-    return str(v).upper().strip() if v is not None else ""
+    if v is None: return ""
+    s = str(v).strip().lstrip("'")  # strip Excel text prefix apostrophe
+    return s.upper().strip()
 
 def matches_any(text, keywords):
     t = text.upper().strip()
@@ -213,21 +226,27 @@ def matches_any(text, keywords):
 
 def detect_col(header_row, keywords, exact_only=False):
     """Find column index. Prefers exact match over contains match.
+    Among exact matches, prefers the one matching the LONGEST keyword (more specific).
     If exact_only=True, only returns exact matches (used for size columns)."""
-    exact_match = None
-    contains_match = None
+    best_exact = None       # (col_index, keyword_length)
+    best_contains = None    # (col_index, keyword_length)
     for i, cell in enumerate(header_row):
         c = cell_str(cell)
         if not c:
             continue
         for kw in keywords:
             k = kw.upper().strip()
-            if c == k and exact_match is None:
-                exact_match = i
-                break
-            elif not exact_only and k in c and contains_match is None:
-                contains_match = i
-    return exact_match if exact_match is not None else (None if exact_only else contains_match)
+            if c == k:
+                if best_exact is None or len(k) > best_exact[1]:
+                    best_exact = (i, len(k))
+            elif not exact_only and k in c:
+                if best_contains is None or len(k) > best_contains[1]:
+                    best_contains = (i, len(k))
+    if best_exact is not None:
+        return best_exact[0]
+    if not exact_only and best_contains is not None:
+        return best_contains[0]
+    return None
 
 def normalize_size(s):
     u = str(s).upper().strip()
@@ -238,8 +257,14 @@ def fmtDate(v):
         return ""
     if isinstance(v, (datetime, date)):
         return v.strftime('%m/%d/%Y')
-    s = str(v).strip()
+    s = str(v).strip().lstrip("'")
+    # Remove time portion
     s = re.sub(r'\s+\d{2}:\d{2}:\d{2}.*', '', s)
+    # Convert ISO format 2026-10-01 -> 10/01/2026
+    iso = re.match(r'(\d{4})-(\d{2})-(\d{2})', s)
+    if iso:
+        return f"{iso.group(2)}/{iso.group(3)}/{iso.group(1)}"
+    # Clean double slashes
     s = re.sub(r'/+', '/', s)
     return s
 
@@ -300,13 +325,16 @@ def find_header_raw(rows, keywords, max_rows=25):
                     v = row[k]
                     if v is None:
                         continue
-                    vs = str(v).strip()
+                    vs = str(v).strip().lstrip("'")
                     if vs in ("", "0", "None"):
                         continue
                     # Skip values that look like column labels
                     if vs.upper() in _LABEL_WORDS:
                         continue
-                    return v
+                    # Return original value for dates (preserve datetime objects)
+                    if isinstance(v, (datetime, date)):
+                        return v
+                    return vs
     return None
 
 def find_header_value(rows, keywords, max_rows=25):
@@ -322,9 +350,44 @@ def find_header_value(rows, keywords, max_rows=25):
 # ══════════════════════════════════════════════════════════════
 
 def parse_po_excel(file_bytes):
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-    ws = wb.active
-    rows = [[cell.value for cell in row] for row in ws.iter_rows()]
+    # Support both .xlsx and legacy .xls
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb.active
+        rows = [[cell.value for cell in row] for row in ws.iter_rows()]
+        all_sheet_rows = [(sn, [[cell.value for cell in row] for row in wb[sn].iter_rows()])
+                          for sn in wb.sheetnames]
+    except Exception:
+        try:
+            import xlrd
+            wb_xls = xlrd.open_workbook(file_contents=file_bytes)
+            ws_xls = wb_xls.sheet_by_index(0)
+            from datetime import datetime as _dt
+            rows = []
+            for i in range(ws_xls.nrows):
+                row = []
+                for j in range(ws_xls.ncols):
+                    cell = ws_xls.cell(i, j)
+                    if cell.ctype == xlrd.XL_CELL_DATE:
+                        try:
+                            dt_tuple = xlrd.xldate_as_tuple(cell.value, wb_xls.datemode)
+                            row.append(_dt(*dt_tuple[:6]) if dt_tuple[0] > 0 else None)
+                        except:
+                            row.append(cell.value)
+                    elif cell.ctype == xlrd.XL_CELL_NUMBER:
+                        v = cell.value
+                        row.append(int(v) if v == int(v) else v)
+                    elif cell.ctype == xlrd.XL_CELL_EMPTY:
+                        row.append(None)
+                    else:
+                        row.append(cell.value)
+                rows.append(row)
+        except Exception as e2:
+            return {"po_number":"","po_date":"","ship_date":"","cancel_date":"",
+                    "customer_name":"","customer_code":"","ship_to":"","bill_to":"",
+                    "terms":"","currency":"USD","lines":[],
+                    "warnings":[f"⚠️ No se pudo leer el archivo: {e2}"]}
+        all_sheet_rows = [("Sheet1", rows)]  # xls: single sheet
 
     result = {
         "po_number":"","po_date":"","ship_date":"","cancel_date":"",
@@ -348,41 +411,58 @@ def parse_po_excel(file_bytes):
                 break
     result["po_number"]   = str(po_number).strip() if po_number else ""
     result["po_date"]     = fmtDate(find_header_value(rows, GLOSSARY["po_date"]))
-    result["ship_date"]   = fmtDate(find_header_value(rows, GLOSSARY["ship_date"]))
+    ship_raw = find_header_raw(rows, GLOSSARY["ship_date"])
+    result["ship_date"] = fmtDate(ship_raw) if ship_raw else ""
     result["cancel_date"] = fmtDate(find_header_value(rows, GLOSSARY["cancel_date"]))
     result["terms"]       = find_header_value(rows, GLOSSARY["terms"])
 
-    # Customer name — first try generic labels, then special BILL TO block
-    customer_name = find_header_value(rows, GLOSSARY["customer_name"])
+    # Customer name — special BILL TO block first (handles both formats):
+    # Format A: "Bill To:   FITTERS" — label+value in same cell (Fitters)
+    # Format B: "BILL TO:" label, value on next row same col (Kings)
+    customer_name = ""
+    for i, row in enumerate(rows[:15]):
+        for j, cell in enumerate(row):
+            raw = str(cell or "").strip()
+            c   = raw.upper()
+            # Check if this cell starts with a BILL TO / SOLD TO variant
+            is_bill_label = any(c.startswith(kw) for kw in [
+                "BILL TO","BILL-TO","SOLD TO","BILLED TO"
+            ])
+            if not is_bill_label:
+                continue
+            # Format A: value after colon in same cell e.g. "Bill To:   FITTERS"
+            if ":" in raw:
+                after = raw.split(":",1)[1].strip()
+                if after and len(after) > 2 and after.upper() not in _LABEL_WORDS:
+                    customer_name = after
+                    break
+            # Format B: value on next row, same column (Kings)
+            if i+1 < len(rows) and j < len(rows[i+1]):
+                v = str(rows[i+1][j] or "").strip()
+                if v and len(v) > 2 and v.upper() not in _LABEL_WORDS:
+                    customer_name = v
+                    break
+        if customer_name:
+            break
+    # Fallback to generic glossary if not found — search full header (up to 60 rows)
     if not customer_name:
-        for i, row in enumerate(rows[:15]):
-            for j, cell in enumerate(row):
-                c = cell_str(cell)
-                if c in ("BILL TO:","BILL TO","SOLD TO:","SOLD TO"):
-                    # Value is on the NEXT ROW at same column (Kings format)
-                    # or after colon on same cell
-                    raw = str(cell).strip()
-                    if ":" in raw:
-                        after = raw.split(":",1)[1].strip()
-                        # Make sure it's not just another label
-                        if after and len(after) > 2 and after.upper() not in _LABEL_WORDS:
-                            customer_name = after; break
-                    # Next row same column
-                    if i+1 < len(rows) and j < len(rows[i+1]):
-                        v = str(rows[i+1][j] or "").strip()
-                        if v and len(v) > 2 and v.upper() not in _LABEL_WORDS:
-                            customer_name = v; break
-            if customer_name:
-                break
+        customer_name = find_header_value(rows, GLOSSARY["customer_name"], max_rows=60)
     result["customer_name"] = customer_name
     result["customer_code"] = find_header_value(rows, GLOSSARY["customer_code"])
 
-    ship_to = find_header_value(rows, GLOSSARY["ship_to"])
+    ship_to = find_header_value(rows, GLOSSARY["ship_to"], max_rows=60)
     if not ship_to:
-        for i, row in enumerate(rows[:15]):
+        for i, row in enumerate(rows):  # search full file
             for j, cell in enumerate(row):
                 c = cell_str(cell)
                 if matches_any(c, ["SHIP TO:","SHIP TO","SHIPPING ADDRESS:","DELIVERY ADDRESS:"]):
+                    # Value after colon in same cell
+                    raw = str(cell).strip()
+                    if ":" in raw:
+                        after = raw.split(":",1)[1].strip()
+                        if after and len(after) > 2 and after.upper() not in _LABEL_WORDS:
+                            ship_to = after; break
+                    # Next rows same column
                     parts = []
                     for k in range(i+1, min(i+5, len(rows))):
                         if j < len(rows[k]):
@@ -403,12 +483,61 @@ def parse_po_excel(file_bytes):
     data_header_row = None
     col_map = {}
 
+    # ── USSF format detection ──────────────────────────────────
+    is_ussf = False
+    for test_row in rows[:6]:
+        if len(test_row) > 6 and cell_str(test_row[6]) in ("DELIVER","CXL","PO"):
+            is_ussf = True
+            break
+
+    # ── Shiekh format detection ─────────────────────────────────
+    # Shiekh: SHIP in col 20, CANCEL in col 20, PO# in col 17, tallas en row 5 cols 8-16
+    is_shiekh = False
+    for test_row in rows[:5]:
+        if len(test_row) > 20 and cell_str(test_row[20]) in ("SHIP","CANCEL"):
+            is_shiekh = True
+            break
+    if is_shiekh:
+        for row in rows[:6]:
+            if len(row) > 21:
+                if cell_str(row[20]) == "SHIP":
+                    result["ship_date"] = fmtDate(row[21])
+                elif cell_str(row[20]) == "CANCEL":
+                    result["cancel_date"] = fmtDate(row[21])
+                if cell_str(row[17]) == "PO#":
+                    result["po_number"] = str(row[18] or "").strip()
+        # Customer from row 1 col 3
+        if len(rows) > 1 and len(rows[1]) > 3 and rows[1][3]:
+            result["customer_name"] = str(rows[1][3]).strip()
+        if len(rows) > 2 and len(rows[2]) > 5 and rows[2][5]:
+            result["ship_to"] = str(rows[2][5]).strip()
+    if is_ussf:
+        # Extract USSF header fields
+        for row in rows[:6]:
+            if len(row) > 7:
+                if cell_str(row[6]) == "PO":
+                    result["po_number"] = str(row[7] or "").strip()
+                elif cell_str(row[6]) == "DELIVER":
+                    result["ship_date"] = fmtDate(row[7])
+                elif cell_str(row[6]) == "CXL":
+                    result["cancel_date"] = fmtDate(row[7])
+        # Customer from row 1 col 0
+        if len(rows) > 1 and rows[1][0]:
+            result["customer_name"] = str(rows[1][0]).strip()
+        # Ship to same as customer
+        result["ship_to"] = result["customer_name"]
+
     for i, row in enumerate(rows):
         row_str = " | ".join(cell_str(c) for c in row)
         has_style = matches_any(row_str, GLOSSARY["col_style"])
         has_qty   = (matches_any(row_str, GLOSSARY["col_qty"]) or
                      matches_any(row_str, GLOSSARY["col_size_break"]) or
                      any(matches_any(row_str, GLOSSARY[k]) for k in SIZE_KEY_MAP))
+        # USSF: detect header by ITEM # in col 0 and QTY. in col 8
+        if is_ussf and not has_qty:
+            if cell_str(row[0]) in ("ITEM #","ITEM#") if row[0] else False:
+                has_style = True
+                has_qty   = True
         if has_style and has_qty:
             data_header_row = i
             col_map["style"]        = detect_col(row, GLOSSARY["col_style"])
@@ -417,13 +546,50 @@ def parse_po_excel(file_bytes):
             col_map["size_break"]   = detect_col(row, GLOSSARY["col_size_break"])
             col_map["size"]         = detect_col(row, ["SIZE"])
             col_map["qty"]          = detect_col(row, GLOSSARY["col_qty"])
-            col_map["cost"]         = detect_col(row, GLOSSARY["col_cost"])
+            # Detect cost columns — prefer net (COST W/DISC) over gross (COST)
+            net_cost_keywords  = ["COST W/ DISC","COST W/DISC","COST W/DISC.","COST WITH DISCOUNT","NET COST","NET UNIT COST","DISCOUNTED PRICE","WHOLESALE NET"]
+            gross_cost_keywords = ["UNIT COST","UNIT PRICE","PRICE PER UNIT","WHOLESALE","COST","WS","PRICE","COSTO UNITARIO","MAYOREO NETO"]
+            col_net  = detect_col(row, net_cost_keywords)
+            col_gross = detect_col(row, gross_cost_keywords)
+            if col_net is not None:
+                col_map["cost"] = col_net
+                col_map["cost_is_net"] = True
+            else:
+                col_map["cost"] = col_gross
+                col_map["cost_is_net"] = False
             col_map["msrp"]         = detect_col(row, GLOSSARY["col_msrp"])
-            col_map["discount"]     = detect_col(row, GLOSSARY["col_discount"])
+            col_map["discount"]     = detect_col(row, GLOSSARY["col_discount"], exact_only=True)
             col_map["total_cost"]   = detect_col(row, GLOSSARY["col_total_cost"])
             col_map["total_retail"] = detect_col(row, GLOSSARY["col_total_retail"])
+            # Detect size columns in this row
             for sz_key in SIZE_KEY_MAP:
                 col_map[sz_key] = detect_col(row, GLOSSARY[sz_key], exact_only=True)
+            # Also check NEXT row for size columns (two-row header like Fitters)
+            # Only if next row has NO style code (i.e. it's a header row, not a data row)
+            if i+1 < len(rows):
+                next_row = rows[i+1]
+                next_row_str = " | ".join(cell_str(c) for c in next_row)
+                # Check if next row is a pure header row (no style codes)
+                style_col = col_map.get("style")
+                next_has_style_data = (
+                    style_col is not None and
+                    style_col < len(next_row) and
+                    next_row[style_col] is not None and
+                    re.match(r'^[A-Za-z]{2,}\d+', str(next_row[style_col]).strip())
+                )
+                if not next_has_style_data and any(matches_any(next_row_str, GLOSSARY[k]) for k in SIZE_KEY_MAP):
+                    for sz_key in SIZE_KEY_MAP:
+                        if col_map.get(sz_key) is None:
+                            col_map[sz_key] = detect_col(next_row, GLOSSARY[sz_key], exact_only=True)
+                    # Skip this second header row when reading data
+                    data_header_row = i+1
+            # USSF override: SIZE in col 6, QTY in col 7
+            if is_ussf:
+                col_map["size"] = 6
+                col_map["qty"]  = 7
+                col_map["cost"] = 9
+                col_map["msrp"] = 10
+                col_map["cost_is_net"] = False
             break
 
     if data_header_row is None:
@@ -459,7 +625,7 @@ def parse_po_excel(file_bytes):
             style_raw = str(row[col_map["style"]] or "").strip()
 
         if style_raw:
-            if matches_any(style_raw, ["TOTAL","SUBTOTAL","GRAND TOTAL","SUB-TOTAL"]):
+            if matches_any(style_raw, ["TOTAL","SUBTOTAL","GRAND TOTAL","SUB-TOTAL","ABOVE TOTAL"]):
                 continue
             if re.match(r'^[A-Za-z]{2,}\d+', style_raw):
                 last_valid_style = style_raw
@@ -529,6 +695,31 @@ def parse_po_excel(file_bytes):
                     try: sizes[sz_name] = int(float(row[ci] or 0))
                     except: pass
             total_units = sum(sizes.values())
+            # Fallback: if no size columns have values, use QTY column as OS (hats/caps)
+            # Only use QTY as fallback if it comes BEFORE the size columns (not a total column)
+            first_size_col = min((col_map[k] for k in SIZE_KEY_MAP if col_map.get(k) is not None), default=999)
+            qty_col = col_map.get("qty")
+            qty_is_before_sizes = qty_col is not None and qty_col < first_size_col
+            if total_units == 0 and qty_is_before_sizes and qty_col < len(row):
+                try:
+                    qty_fallback = int(float(row[qty_col] or 0))
+                    if qty_fallback > 0:
+                        sizes["OS"] = qty_fallback
+                        total_units = qty_fallback
+                except: pass
+            # Fallback: if all size cols are 0 but QTY col has a value, use as OS
+            # Only apply for genuine new style rows (not carry-forward/total rows)
+            if total_units == 0 and col_map.get("qty") is not None and col_map["qty"] < len(row):
+                orig_style_val = ""
+                if col_map.get("style") is not None and col_map["style"] < len(row):
+                    orig_style_val = str(row[col_map["style"]] or "").strip()
+                if orig_style_val and re.match(r"^[A-Za-z]{2,}\d+", orig_style_val):
+                    try:
+                        q = int(float(row[col_map["qty"]] or 0))
+                        if q > 0:
+                            sizes["OS"] = q
+                            total_units = q
+                    except: pass
 
         elif has_size_col and col_map.get("size") is not None:
             size_val = str(row[col_map["size"]] or "").strip()
@@ -553,10 +744,14 @@ def parse_po_excel(file_bytes):
 
         if total_units == 0 and not desc:
             continue
+        if total_units == 0 and not cost and not msrp:
+            continue
         if has_size_col and not has_matrix and not size_val and not has_size_break:
             continue
 
-        line_cost    = cost * (1 - discount) if discount else cost
+        # If cost column is already net (COST W/DISC), don't apply discount again
+        cost_is_net = col_map.get("cost_is_net", False)
+        line_cost   = cost if cost_is_net else (cost * (1 - discount) if discount else cost)
         total_cost   = line_cost * total_units
         total_retail = msrp * total_units
 
@@ -571,7 +766,7 @@ def parse_po_excel(file_bytes):
                     if not existing["cost"] and cost: existing["cost"] = cost
                     if not existing["msrp"] and msrp: existing["msrp"] = msrp
                     if not existing["discount"] and discount: existing["discount"] = discount
-                    existing["line_cost"]    = existing["cost"] * (1 - existing["discount"]) if existing["discount"] else existing["cost"]
+                    existing["line_cost"]    = existing["cost"] if col_map.get("cost_is_net") else (existing["cost"] * (1 - existing["discount"]) if existing["discount"] else existing["cost"])
                     existing["total_cost"]   = existing["line_cost"] * existing["total_units"]
                     existing["total_retail"] = existing["msrp"] * existing["total_units"]
                     merged = True
@@ -586,6 +781,59 @@ def parse_po_excel(file_bytes):
                 "sizes": sizes, "total_units": total_units,
                 "total_cost": total_cost, "total_retail": total_retail,
             })
+
+    # ── Shiekh multi-sheet: parse remaining sheets ─────────────
+    if is_shiekh and len(all_sheet_rows) > 1:
+        for sheet_name, sheet_rows in all_sheet_rows[1:]:
+            if sheet_name.upper() in ("TOTALS","SHEET1","SUMMARY"):
+                continue
+            # Find size header row (has OS, S, M, L, XL in row 5)
+            shiekh_size_cols = {}
+            for sr_idx, sr in enumerate(sheet_rows[:8]):
+                sr_str = " | ".join(cell_str(c) for c in sr)
+                if any(cell_str(c) in ("S","M","L","XL","OS","2XL","3XL") for c in sr if c):
+                    for sc_idx, sc in enumerate(sr):
+                        norm = normalize_size(cell_str(sc)) if sc else ""
+                        if norm in SIZE_ORDER:
+                            shiekh_size_cols[norm] = sc_idx
+                    break
+            if not shiekh_size_cols:
+                continue
+            # Get this sheet's PO# if different
+            sheet_po = ""
+            for sr in sheet_rows[:5]:
+                if len(sr) > 18 and cell_str(sr[17]) == "PO#":
+                    sheet_po = str(sr[18] or "").strip()
+            # Find data row (style in col 3, desc in col 4, color in col 5)
+            for sr in sheet_rows[6:]:
+                style_raw = str(sr[3] or "").strip() if len(sr) > 3 else ""
+                if not style_raw or not re.match(r"^[A-Za-z]{2,}\d+", style_raw):
+                    continue
+                desc  = str(sr[4] or "").strip() if len(sr) > 4 else ""
+                color = str(sr[5] or "").strip() if len(sr) > 5 else ""
+                cost  = float(sr[19] or 0) if len(sr) > 19 else 0
+                msrp  = float(sr[20] or 0) if len(sr) > 20 else 0
+                stock, cc, cn = parse_style_color(style_raw)
+                if color and not cn: cn = color
+                sizes = {s: 0 for s in SIZE_ORDER}
+                for sz_name, sc_idx in shiekh_size_cols.items():
+                    if sc_idx < len(sr):
+                        try: sizes[sz_name] = int(float(sr[sc_idx] or 0))
+                        except: pass
+                total_units = sum(sizes.values())
+                if total_units == 0: continue
+                line_cost    = cost
+                total_cost   = line_cost * total_units
+                total_retail = msrp * total_units
+                lines.append({
+                    "style_raw": style_raw, "stock": stock,
+                    "color_code": cc, "color_name": cn,
+                    "description": desc, "cost": cost, "msrp": msrp,
+                    "discount": 0, "line_cost": line_cost,
+                    "sizes": sizes, "total_units": total_units,
+                    "total_cost": total_cost, "total_retail": total_retail,
+                })
+                break  # one product per sheet in Shiekh format
 
     result["lines"] = lines
     return result
@@ -644,7 +892,7 @@ def generate_order_form(data):
 
     COLS = ["BRAND","STOCK","COLOR CODE","COLOR NAME","DESCRIPTION","CURRENCY",
             "LINE COST", cost_w_disc_header, "MSRP",
-            "OS","XXS","XS","S","M","L","XL","2XL","3XL",
+            "OS","XXS","XS","S","M","L","XL","2XL","3XL","4XL","5XL",
             "TOTAL UNITS","TOTAL COST","TOTAL RETAIL"]
     for j, cn in enumerate(COLS, start=1):
         c = ws.cell(row=13, column=j, value=cn)
@@ -662,13 +910,14 @@ def generate_order_form(data):
               s.get("OS",0), s.get("XXS",0), s.get("XS",0),
               s.get("S",0), s.get("M",0), s.get("L",0),
               s.get("XL",0), s.get("2XL",0), s.get("3XL",0),
+              s.get("4XL",0), s.get("5XL",0),
               line["total_units"], round(line["total_cost"],2), round(line["total_retail"],2)]
         for j, val in enumerate(rd, start=1):
             c = ws.cell(row=i, column=j, value=val)
             c.font = vf
             c.alignment = Alignment(horizontal="center" if j > 5 else "left")
 
-    for i, w in enumerate([14,20,11,14,42,9,10,14,8,6,6,6,6,6,6,6,6,6,12,12,12], start=1):
+    for i, w in enumerate([14,20,11,14,42,9,10,14,8,6,6,6,6,6,6,6,6,6,6,6,12,12,12], start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     output = io.BytesIO()
@@ -695,6 +944,35 @@ if uploaded_file:
 
     for w in data.get("warnings", []):
         st.markdown(f'<div class="warn-box">{w}</div>', unsafe_allow_html=True)
+
+    # ── Diagnostic report ────────────────────────────────────
+    diag = []
+    diag.append(f"📄 Archivo: {uploaded_file.name}")
+    diag.append(f"{'✅' if data['po_number'] else '❌'} PO Number: {data['po_number'] or 'NO DETECTADO'}")
+    diag.append(f"{'✅' if data['customer_name'] else '❌'} Cliente: {data['customer_name'] or 'NO DETECTADO'}")
+    diag.append(f"{'✅' if data['ship_date'] else '⚠️'} Ship Date: {data['ship_date'] or 'NO DETECTADO'}")
+    diag.append(f"{'✅' if data['cancel_date'] else '⚠️'} Cancel Date: {data['cancel_date'] or 'NO DETECTADO'}")
+    diag.append(f"{'✅' if data['lines'] else '❌'} Líneas de producto: {len(data['lines'])}")
+    if data['lines']:
+        zero_sizes = [l['stock'] for l in data['lines'] if l['total_units'] == 0]
+        if zero_sizes:
+            diag.append(f"⚠️  Estilos con 0 unidades: {', '.join(zero_sizes)}")
+        no_desc = [l['stock'] for l in data['lines'] if not l['description']]
+        if no_desc:
+            diag.append(f"⚠️  Sin descripción: {', '.join(no_desc)}")
+        no_cost = [l['stock'] for l in data['lines'] if l['cost'] == 0]
+        if no_cost:
+            diag.append(f"⚠️  Sin costo: {', '.join(no_cost)}")
+
+    has_issues = any(l.startswith("❌") or l.startswith("⚠️") for l in diag)
+
+    with st.expander("📋 Reporte de lectura" + (" ⚠️ hay campos sin detectar" if has_issues else " ✅ todo detectado"), expanded=has_issues):
+        for line in diag:
+            st.text(line)
+        if has_issues:
+            st.divider()
+            st.markdown("**¿Algo salió mal?** Copia este reporte y mándalo para corregir el parser:")
+            st.code("\n".join(diag))
 
     if data["lines"]:
         st.markdown('<div class="success-box">✓ ' + str(len(data["lines"])) + ' estilos detectados</div>', unsafe_allow_html=True)

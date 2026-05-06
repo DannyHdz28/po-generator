@@ -1312,12 +1312,17 @@ with col1:
 
 if uploaded_file:
     with st.spinner("Leyendo archivo..."):
-        file_bytes = uploaded_file.read()
-        ext = uploaded_file.name.split('.')[-1].lower()
-        if ext == 'pdf':
-            data = parse_po_pdf(file_bytes)
-        else:
-            data = parse_po_excel(file_bytes)
+        try:
+            file_bytes = uploaded_file.read()
+            ext = uploaded_file.name.split('.')[-1].lower()
+            if ext == 'pdf':
+                data = parse_po_pdf(file_bytes)
+            else:
+                data = parse_po_excel(file_bytes)
+        except Exception as e:
+            st.error(f"⚠️ Error al leer el archivo: {str(e)[:200]}")
+            st.info("Intenta con otro archivo o contacta soporte.")
+            st.stop()
 
     for w in data.get("warnings", []):
         st.markdown(f'<div class="warn-box">{w}</div>', unsafe_allow_html=True)

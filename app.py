@@ -538,7 +538,7 @@ def parse_po_pdf(file_bytes):
                 if m2:
                     result["ship_to"] = m2.group(1).strip()
 
-        caesars_size_pat = re.compile(r'\b(MD|LG|2XL|3XL|XXL|2X|3X|XL|XS|SM|S|M|L)\s+\$')
+        caesars_size_pat = re.compile(r'[A-Z]*(MD|LG|2XL|3XL|XXL|2X|3X|XL|XS|SM|S|M|L)\s+\$')
         caesars_price_pat = re.compile(r'\$([\d,]+\.\d{2})')
         caesars_qty_pat   = re.compile(r'\b(\d{1,3})\s+\d{12,}')
         caesars_sz_norm   = {"MD":"M","LG":"L","SM":"S","XL":"XL","2X":"2XL","3X":"3XL",
@@ -1380,7 +1380,7 @@ if uploaded_file:
                 "LINE COST":f'${l["line_cost"]:.2f}',"MSRP":f'${l["msrp"]:.2f}',
                 "TOTAL COST":f'${l["total_cost"]:.2f}',
             })
-        st.dataframe(pd.DataFrame(preview), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(preview), width="stretch", hide_index=True)
 
         totU = sum(l["total_units"] for l in data["lines"])
         totC = sum(l["total_cost"]  for l in data["lines"])
@@ -1390,14 +1390,14 @@ if uploaded_file:
         m3.metric("Total Costo", f"${totC:,.2f}")
 
         st.write("")
-        if st.button("⬇️  Generar ORDER FORM", type="primary", use_container_width=True):
+        if st.button("⬇️  Generar ORDER FORM", type="primary", width="stretch"):
             with st.spinner("Generando..."):
                 output   = generate_order_form(data)
                 customer = (data["customer_name"] or data["po_number"] or "ORDER").replace("/","")[:30]
                 filename = f"ORDER FORM - {customer}.xlsx"
             st.download_button("📥 Descargar ORDER FORM", data=output, file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True)
+                width="stretch")
     else:
         st.markdown('<div class="warn-box">⚠️ No se detectaron líneas. Verifica el archivo.</div>', unsafe_allow_html=True)
 else:

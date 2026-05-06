@@ -197,6 +197,7 @@ SIZE_NORMALIZE = {
     "3XL":"3XL","XXXL":"3XL","3X":"3XL","3X-LARGE":"3XL","3X LARGE":"3XL",
     "4XL":"4XL","XXXXL":"4XL","4X":"4XL","4X-LARGE":"4XL","4X LARGE":"4XL",
     "5XL":"5XL","XXXXXL":"5XL","5X":"5XL","5X-LARGE":"5XL","5X LARGE":"5XL",
+    "MD":"M","LG":"L","SM":"S",  # Caesars format
 }
 COLOR_CODES = {
     "BLK":"BLACK","WHT":"WHITE","NVY":"NAVY","RED":"RED","BLU":"BLUE",
@@ -453,6 +454,9 @@ def parse_po_pdf(file_bytes):
     has_code_lines = any(code_line_pattern.search(line) for line in text_lines)
     has_col_styles = any(style_col_pattern.match(w['text']) for w in all_words)
     has_size_color = any(size_color_pat.search(line) for line in text_lines)
+    # Format D (Caesars): style+desc+size+$cost+qty+UPC all in one line
+    caesars_pat = re.compile(r'[A-Z]{3,6}\d{6,}-[A-Z]{2,4}.+\$\d+\.\d{2}.+\d{12,}')
+    has_caesars = any(caesars_pat.search(line) for line in text_lines)
 
     product_lines = []
 
@@ -514,6 +518,54 @@ def parse_po_pdf(file_bytes):
                 msrp     = float(prices[1]) if len(prices) > 1 else 0
                 if qty > 0:
                     product_lines.append({'style':style,'size':size,'qty':qty,'cost':cost,'msrp':msrp,'desc':desc})
+
+    elif has_caesars:
+        # ── Format D: Caesars / style+desc+size+$cost+qty+UPC in one line ──
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        for line in text_lines:
+            m = re.search(r'Purchase Order:\s+(\S+)', line)
+            if m and not result["po_number"]: result["po_number"] = m.group(1)
+            m = re.search(r'Start Ship:\s+(\S+)', line)
+            if m and not result["ship_date"]: result["ship_date"] = m.group(1)
+            m = re.search(r'Cancel Date:\s+(\S+)', line)
+            if m and not result["cancel_date"]: result["cancel_date"] = m.group(1)
+            m = re.search(r'Bill to:\s+(.+)', line)
+            if m and not result["customer_name"]:
+                result["customer_name"] = m.group(1).strip()
+            # Delivery address
+            if 'Delivery Address:' in line and not result["ship_to"]:
+                m2 = re.search(r'Delivery Address:\s+(.+)', line)
+                if m2:
+                    result["ship_to"] = m2.group(1).strip()
+
+        caesars_size_pat = re.compile(r'\b(MD|LG|2XL|3XL|XXL|2X|3X|XL|XS|SM|S|M|L)\s+\$')
+        caesars_price_pat = re.compile(r'\$([\d,]+\.\d{2})')
+        caesars_qty_pat   = re.compile(r'\b(\d{1,3})\s+\d{12,}')
+        caesars_sz_norm   = {"MD":"M","LG":"L","SM":"S","XL":"XL","2X":"2XL","3X":"3XL",
+                             "XXL":"2XL","2XL":"2XL","3XL":"3XL","XS":"XS","S":"S","M":"M","L":"L"}
+
+        for line in text_lines:
+            sm = style_col_pattern.search(line) if False else None
+            # Use style with hyphen pattern
+            st_m = re.search(r'\b([A-Z]{3,6}\d{6,}-[A-Z]{2,4})\b', line)
+            sz_m = caesars_size_pat.search(line)
+            if not st_m or not sz_m: continue
+            prices = caesars_price_pat.findall(line)
+            qty_m  = caesars_qty_pat.search(line)
+            style  = st_m.group(1)
+            raw_sz = sz_m.group(1)
+            size   = caesars_sz_norm.get(raw_sz, raw_sz)
+            cost   = float(prices[0].replace(',','')) if prices else 0
+            msrp   = float(prices[1].replace(',','')) if len(prices) > 1 else 0
+            qty    = int(qty_m.group(1)) if qty_m else 0
+            # Description: between style and size
+            between = line[st_m.end():sz_m.start()].strip()
+            words   = between.split()
+            desc    = ' '.join(words[:-2]) if len(words) > 2 else ' '.join(words[:-1])
+            if qty > 0:
+                product_lines.append({'style':style,'size':size,'qty':qty,
+                                      'cost':cost,'msrp':msrp,'desc':desc})
+
 
     elif has_col_styles:
         # ── Format A: Fanatics / style as column ──────────────
@@ -603,6 +655,7 @@ def parse_po_pdf(file_bytes):
             desc   = desc_m.group(1).strip() if desc_m else ''
             if qty > 0:
                 product_lines.append({'style':f"{style}-{color}",'size':size,'qty':qty,'cost':cost,'msrp':0,'desc':desc})
+
 
     # Group by style+color
     grouped = OrderedDict()

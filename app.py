@@ -474,6 +474,8 @@ def parse_po_pdf(file_bytes):
     has_shiekh_lab = any(re.match(r'P\.O\. #\s+\S+', line) for line in text_lines)
     # Format F (Follett): "P/O Number -", style has "/" like "70102/CSNUCRD"
     has_follett = any('P/O Number' in line or 'P/O Location' in line for line in text_lines)
+    # Format G (Blue Jays / PLU-VLU): columnas PLU VLU Product Description Colour Name Size Qty Unit Cost
+    has_plu_vlu = any(re.search(r'\bPLU\b', line) and re.search(r'\bVLU\b', line) for line in text_lines)
 
     product_lines = []
 
@@ -749,6 +751,100 @@ def parse_po_pdf(file_bytes):
                         'sizes_map': sizes
                     })
             else:
+                i += 1
+
+    elif has_plu_vlu:
+        # ── Format G: Blue Jays / PLU-VLU — una fila por talla ──
+        # VLU puede estar partido en dos líneas: "LTJ1315907-" + "ERB" en la siguiente
+        # Header: "PO #: 3328", fechas en fila "Order Date Ship Date Arrival Date Cancel Date"
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        result["customer_name"] = ""
+
+        # Customer: línea justo después de "Purchase Order"
+        for i, line in enumerate(text_lines):
+            if line.strip() == 'Purchase Order' and i+1 < len(text_lines):
+                result["customer_name"] = text_lines[i+1].strip()
+                break
+
+        for i, line in enumerate(text_lines):
+            m = re.search(r'PO\s*#[:\s]+(\w+)', line)
+            if m and not result["po_number"]:
+                result["po_number"] = m.group(1)
+            m = re.search(r'Buyer[:\s]+(.+)', line)
+            if m and not result.get("buyer"):
+                result["buyer"] = m.group(1).strip().split('  ')[0]
+            if re.search(r'Order Date', line) and re.search(r'Ship Date', line) and re.search(r'Cancel Date', line):
+                if i+1 < len(text_lines):
+                    date_vals = re.findall(r'\d+/\d+/\d+', text_lines[i+1])
+                    if len(date_vals) >= 2: result["ship_date"]   = date_vals[1]
+                    if len(date_vals) >= 4: result["cancel_date"] = date_vals[3]
+
+        # Find header row index
+        header_idx = None
+        for i, line in enumerate(text_lines):
+            if re.search(r'\bPLU\b', line) and re.search(r'\bVLU\b', line):
+                header_idx = i
+                break
+
+        if header_idx is not None:
+            size_norm_g = {"S":"S","M":"M","L":"L","XL":"XL","2XL":"2XL","3XL":"3XL",
+                           "4XL":"4XL","5XL":"5XL","XS":"XS","XXS":"XXS","OS":"OS","OSFA":"OS"}
+            i = header_idx + 1
+            while i < len(text_lines):
+                line = text_lines[i]
+                # Stop at totals/legal
+                if re.match(r'^\s*(Total:|CHANGES|AT ANY|Printed:)', line):
+                    break
+                # Data row starts with 6-digit PLU
+                m_plu = re.match(r'^(\d{6})\s+', line)
+                if not m_plu:
+                    i += 1; continue
+
+                # VLU: may be "LTJ1315907-" (trailing hyphen = split across lines)
+                vlu = ''
+                after_plu = line[m_plu.end():]
+                vlu_m = re.match(r'([A-Z0-9]+-[A-Z]*)', after_plu)
+                if vlu_m:
+                    vlu_raw = vlu_m.group(1)
+                    if vlu_raw.endswith('-'):
+                        # Suffix is on the next line
+                        if i+1 < len(text_lines):
+                            suffix_m = re.match(r'^([A-Z]+)\b', text_lines[i+1].strip())
+                            if suffix_m:
+                                vlu = vlu_raw + suffix_m.group(1)
+                    else:
+                        vlu = vlu_raw
+
+                if not vlu:
+                    i += 1; continue
+
+                # Numbers at end: Qty, Item Retail, Unit Cost, Ext.Cost
+                nums = re.findall(r'[\d,]+\.?\d*', line)
+                # Remove PLU (first 6-digit number)
+                nums = [n for n in nums if not re.match(r'^\d{6}$', n)]
+                nums_f = [float(n.replace(',','')) for n in nums]
+                qty         = int(nums_f[-4]) if len(nums_f) >= 4 else 0
+                item_retail = nums_f[-3]      if len(nums_f) >= 3 else 0
+                unit_cost   = nums_f[-2]      if len(nums_f) >= 2 else 0
+
+                # Size: find size token in the line
+                size = "OS"
+                for p in reversed(line.split()):
+                    if p.upper() in size_norm_g:
+                        size = size_norm_g[p.upper()]; break
+
+                # Description: everything between VLU and the size token
+                vlu_stub = vlu_raw  # what appeared in this line (may have trailing -)
+                vlu_pos = line.find(vlu_stub)
+                desc_raw = line[vlu_pos + len(vlu_stub):].strip()
+                # Strip trailing numbers and size
+                desc_raw = re.sub(r'\s+\S+\s+[\d,]+\.?\d*\s+[\d,]+\.?\d*\s+[\d,]+\.?\d*\s+[\d,]+\.?\d*\s*$', '', desc_raw).strip()
+
+                if qty > 0:
+                    product_lines.append({
+                        'style': vlu, 'size': size, 'qty': qty,
+                        'cost': unit_cost, 'msrp': item_retail, 'desc': desc_raw
+                    })
                 i += 1
 
     elif has_follett:
@@ -1451,6 +1547,9 @@ def generate_order_form(data):
         c.fill = PatternFill("solid", fgColor="222222")
         c.alignment = Alignment(horizontal="center")
 
+    zero_fill = PatternFill("solid", fgColor="AAAAAA")   # gris para 0 unidades
+    zero_font = Font(name="DM Sans", size=9, italic=True, color="666666")
+
     for i, line in enumerate(data["lines"], start=14):
         s = line["sizes"]
         rd = ["PRO STANDARD", line["stock"], line["color_code"], line["color_name"],
@@ -1463,9 +1562,14 @@ def generate_order_form(data):
               s.get("XL",0), s.get("2XL",0), s.get("3XL",0),
               s.get("4XL",0), s.get("5XL",0),
               line["total_units"], round(line["total_cost"],2), round(line["total_retail"],2)]
+        is_zero = line["total_units"] == 0
         for j, val in enumerate(rd, start=1):
             c = ws.cell(row=i, column=j, value=val)
-            c.font = vf
+            if is_zero:
+                c.font = zero_font
+                c.fill = zero_fill
+            else:
+                c.font = vf
             c.alignment = Alignment(horizontal="center" if j > 5 else "left")
 
     for i, w in enumerate([14,20,11,14,42,9,10,14,8,6,6,6,6,6,6,6,6,6,6,6,12,12,12], start=1):
@@ -1560,7 +1664,7 @@ if uploaded_file:
                 "DESCRIPTION":l["description"],
                 "OS":s.get("OS",0),"S":s.get("S",0),"M":s.get("M",0),
                 "L":s.get("L",0),"XL":s.get("XL",0),"2XL":s.get("2XL",0),"3XL":s.get("3XL",0),
-                "UNITS":l["total_units"],
+                "UNITS": f'0 ⚠️' if l["total_units"] == 0 else l["total_units"],
                 "LINE COST":f'${l["line_cost"]:.2f}',"MSRP":f'${l["msrp"]:.2f}',
                 "TOTAL COST":f'${l["total_cost"]:.2f}',
             })

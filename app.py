@@ -1736,7 +1736,7 @@ if uploaded_file:
             diag.append(f"⚠️  Estilos con 0 unidades: {', '.join(zero_sizes)}")
         no_desc = [l['stock'] for l in data['lines'] if not l['description']]
         if no_desc:
-            diag.append(f"⚠️  Sin descripción: {', '.join(no_desc)}")
+            diag.append(f"ℹ️  Descripción no disponible (PDF escaneado): {', '.join(no_desc)}")
         no_cost = [l['stock'] for l in data['lines'] if l['cost'] == 0]
         if no_cost:
             diag.append(f"⚠️  Sin costo: {', '.join(no_cost)}")

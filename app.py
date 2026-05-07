@@ -1825,7 +1825,10 @@ if uploaded_file:
     if data['lines']:
         zero_sizes = [l['stock'] for l in data['lines'] if l['total_units'] == 0]
         if zero_sizes:
-            diag.append(f"⚠️  Estilos con 0 unidades: {', '.join(zero_sizes)}")
+            if len(zero_sizes) > 10:
+                diag.append(f"ℹ️  {len(zero_sizes)} estilos con 0 unidades (sin orden)")
+            else:
+                diag.append(f"⚠️  Estilos con 0 unidades: {', '.join(zero_sizes)}")
         no_desc = [l['stock'] for l in data['lines'] if not l['description']]
         if no_desc:
             diag.append(f"ℹ️  Descripción no disponible (PDF escaneado): {', '.join(no_desc)}")

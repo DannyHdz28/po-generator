@@ -378,6 +378,7 @@ def parse_po_pdf(file_bytes):
     from collections import defaultdict, OrderedDict
 
     all_words = []
+    extract_text_lines = []  # fallback for PDFs where extract_words is noisy
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             for page_num, page in enumerate(pdf.pages):
@@ -386,6 +387,11 @@ def parse_po_pdf(file_bytes):
                         'page': page_num, 'x0': w['x0'],
                         'top': w['top'], 'text': w['text']
                     })
+                # Also collect clean text lines via extract_text
+                page_text = page.extract_text() or ""
+                for line in page_text.split('\n'):
+                    if line.strip():
+                        extract_text_lines.append(line)
     except Exception as e:
         return {"po_number":"","po_date":"","ship_date":"","cancel_date":"",
                 "customer_name":"","customer_code":"","ship_to":"","bill_to":"",
@@ -417,6 +423,14 @@ def parse_po_pdf(file_bytes):
         for key in sorted_keys:
             ws = sorted(lines_dict[key], key=lambda w: w['x0'])
             text_lines.append(' '.join(w['text'] for w in ws))
+
+        # Detect noisy PDFs (words duplicated due to multi-column layout)
+        # If >20% of lines have repeated consecutive words, use extract_text_lines
+        if extract_text_lines and text_lines:
+            noisy = sum(1 for l in text_lines[:20]
+                        if re.search(r'\b(\w+) \1\b', l))
+            if noisy > 3:
+                text_lines = extract_text_lines
 
     # ── Header extraction ──────────────────────────────────────
     PDF_STOPS = [
@@ -485,6 +499,9 @@ def parse_po_pdf(file_bytes):
     has_plu_vlu = any(re.search(r'\bPLU\b', line) and re.search(r'\bVLU\b', line) for line in text_lines)
     # Format H (Aramark): "PURCHASE ORDER # NNNNN", rows: 6-digit# desc STYLE COLOR SIZE qty 0 qty cost ext
     has_aramark = any(re.match(r'PURCHASE ORDER #\s+\d+', line) for line in text_lines)
+    # Format I (San Manuel): "PO: PO14299", table header "# VENDOR SKU ITEM SIZE/DIM2 QTY ITEM COST EXT COST"
+    has_san_manuel = any('VENDOR SKU' in line and 'EXT COST' in line for line in text_lines) or \
+        any('VENDOR SKU' in line and 'EXT COST' in line for line in extract_text_lines)
 
     product_lines = []
 
@@ -595,7 +612,7 @@ def parse_po_pdf(file_bytes):
                                       'cost':cost,'msrp':msrp,'desc':desc})
 
 
-    elif has_col_styles:
+    elif has_col_styles and not has_san_manuel:
         # ── Format A: Fanatics / style as column ──────────────
         col_x = {"style": 399, "size": 620, "qty": 691, "msrp": 724, "cost": 764}
         for key in sorted_keys:
@@ -855,6 +872,81 @@ def parse_po_pdf(file_bytes):
                         'cost': unit_cost, 'msrp': item_retail, 'desc': desc_raw
                     })
                 i += 1
+
+    elif has_san_manuel:
+        # ── Format I: San Manuel / Yaamava — "PO: PONNNNN", tabla con # VENDOR SKU ITEM SIZE/DIM2 QTY ITEM COST EXT COST
+        # Usa extract_text_lines (limpio) en vez de text_lines (ruidoso para este PDF)
+        san_lines = extract_text_lines if extract_text_lines else text_lines
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        result["customer_name"] = ""
+
+        for i, line in enumerate(san_lines):
+            m = re.search(r'PO:\s+(PO\w+)', line)
+            if m and not result["po_number"]:
+                result["po_number"] = m.group(1)
+            m = re.search(r'Start Ship:\s*(\S+)', line)
+            if m and not result["ship_date"]:
+                result["ship_date"] = m.group(1)
+            m = re.search(r'Cancel Ship:\s*(\S+)', line)
+            if m and not result["cancel_date"]:
+                result["cancel_date"] = m.group(1)
+            # Customer: line with "dba"
+            if not result["customer_name"] and 'dba' in line.lower():
+                result["customer_name"] = line.strip()
+
+
+        # Fallback: search customer in clean extract_text_lines
+        if not result["customer_name"]:
+            for _l in extract_text_lines:
+                if 'dba' in _l.lower():
+                    result["customer_name"] = _l.strip()
+                    break
+
+        SIZE_SET_I = {"XS","XXS","S","M","L","XL","XXL","2XL","3XL","4XL","5XL","OS","OSF","OSFA"}
+        size_norm_i = {"XXL":"2XL","OSF":"OS","OSFA":"OS"}
+
+        # Find header row
+        header_idx = None
+        for i, line in enumerate(san_lines):
+            if 'VENDOR SKU' in line and 'EXT COST' in line:
+                header_idx = i
+                break
+
+        if header_idx is not None:
+            # Row pattern: [#] [STYLE-COLOR] [DESCRIPTION...] [SIZE?] [QTY] [$COST] [$EXT]
+            row_pat = re.compile(r'^(\d+)\s+([A-Z0-9]+-[A-Z]+)\s+(.+?)\s+(XS|XXS|S|M|L|XL|XXL|2XL|3XL|4XL|5XL|OSF|OSFA|OS)?\s+(\d+)\s+\$([0-9,.]+)\s+\$([0-9,.]+)\s*$')
+            pending_size = None  # size that appeared on a solo line
+
+            for i in range(header_idx + 1, len(san_lines)):
+                line = san_lines[i].strip()
+                if re.match(r'^Totals', line): break
+
+                # Solo size line (just a size token alone)
+                if re.match(r'^(XS|XXS|S|M|L|XL|XXL|2XL|3XL|4XL|5XL|OSF|OSFA|OS)$', line):
+                    pending_size = size_norm_i.get(line, line)
+                    continue
+
+                m = row_pat.match(line)
+                if not m:
+                    pending_size = None
+                    continue
+
+                _, style_raw, desc, size_inline, qty_s, cost_s, _ = m.groups()
+                size_raw = (pending_size or size_inline or "OS").upper()
+                size = size_norm_i.get(size_raw, size_raw)
+                if size not in SIZE_SET_I: size = "OS"
+                pending_size = None
+
+                try: qty = int(qty_s)
+                except: qty = 0
+                try: cost = float(cost_s.replace(',',''))
+                except: cost = 0.0
+
+                if qty > 0:
+                    product_lines.append({
+                        'style': style_raw, 'size': size, 'qty': qty,
+                        'cost': cost, 'msrp': 0, 'desc': desc.strip()
+                    })
 
     elif has_aramark:
         # ── Format H: Aramark — scanned PDF, layout may split desc/style across columns ──

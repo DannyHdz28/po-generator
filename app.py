@@ -34,7 +34,7 @@ GLOSSARY = {
     "po_number": [
         "PO NUMBER","PO NO","PO NO.","PO NAME",
         "PURCHASE ORDER NUMBER","ORDER NUMBER",
-        "P.O. NUMBER","P.O.#",
+        "P.O. NUMBER","P.O.#","PO#:",
         "CUSTOMER PO",  # Boom format
         # Short/ambiguous removed: "PO#","PO:","ORDER #","ORDER NO" -- cause false positives
     ],
@@ -393,23 +393,30 @@ def parse_po_pdf(file_bytes):
                 "warnings":[f"⚠️ No se pudo leer el PDF: {e}"]}
 
     if not all_words:
-        return {"po_number":"","po_date":"","ship_date":"","cancel_date":"",
-                "customer_name":"","customer_code":"","ship_to":"","bill_to":"",
-                "terms":"","currency":"USD","lines":[],
-                "warnings":["⚠️ El PDF no tiene texto extraíble (puede ser escaneado)."]}
+        # ── OCR fallback for scanned PDFs ──────────────────────
+        try:
+            import pdf2image, pytesseract
+            images = pdf2image.convert_from_bytes(file_bytes, dpi=200)
+            ocr_text = "\n".join(pytesseract.image_to_string(img) for img in images)
+            text_lines = [l for l in ocr_text.split('\n') if l.strip()]
+        except Exception as ocr_err:
+            return {"po_number":"","po_date":"","ship_date":"","cancel_date":"",
+                    "customer_name":"","customer_code":"","ship_to":"","bill_to":"",
+                    "terms":"","currency":"USD","lines":[],
+                    "warnings":[f"⚠️ El PDF no tiene texto extraíble y el OCR falló: {ocr_err}"]}
+    else:
+        # Group words into lines by page+top (within 2px)
+        lines_dict = defaultdict(list)
+        for w in all_words:
+            key = (w['page'], round(w['top']/2)*2)
+            lines_dict[key].append(w)
+        sorted_keys = sorted(lines_dict.keys())
 
-    # Group words into lines by page+top (within 2px)
-    lines_dict = defaultdict(list)
-    for w in all_words:
-        key = (w['page'], round(w['top']/2)*2)
-        lines_dict[key].append(w)
-    sorted_keys = sorted(lines_dict.keys())
-
-    # Build text lines
-    text_lines = []
-    for key in sorted_keys:
-        ws = sorted(lines_dict[key], key=lambda w: w['x0'])
-        text_lines.append(' '.join(w['text'] for w in ws))
+        # Build text lines
+        text_lines = []
+        for key in sorted_keys:
+            ws = sorted(lines_dict[key], key=lambda w: w['x0'])
+            text_lines.append(' '.join(w['text'] for w in ws))
 
     # ── Header extraction ──────────────────────────────────────
     PDF_STOPS = [
@@ -476,6 +483,8 @@ def parse_po_pdf(file_bytes):
     has_follett = any('P/O Number' in line or 'P/O Location' in line for line in text_lines)
     # Format G (Blue Jays / PLU-VLU): columnas PLU VLU Product Description Colour Name Size Qty Unit Cost
     has_plu_vlu = any(re.search(r'\bPLU\b', line) and re.search(r'\bVLU\b', line) for line in text_lines)
+    # Format H (Aramark): "PURCHASE ORDER # NNNNN", rows: 6-digit# desc STYLE COLOR SIZE qty 0 qty cost ext
+    has_aramark = any(re.match(r'PURCHASE ORDER #\s+\d+', line) for line in text_lines)
 
     product_lines = []
 
@@ -847,6 +856,109 @@ def parse_po_pdf(file_bytes):
                     })
                 i += 1
 
+    elif has_aramark:
+        # ── Format H: Aramark — scanned PDF, layout may split desc/style across columns ──
+        # Row pattern A: [6d#] [desc] [STYLECODE] [COLOR] [SIZE] [qty] [noise] [qty] [cost] [ext]
+        # Row pattern B (27402): desc and style on separate OCR lines — join by item#
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        result["customer_name"] = ""
+
+        pending_ship = False; pending_cancel = False
+        for line in text_lines:
+            m = re.search(r'PURCHASE ORDER #\s+(\d+)', line)
+            if m and not result["po_number"]:
+                result["po_number"] = m.group(1)
+            # Ship Date inline: "Ship Date: 9/1/2026 ..."
+            m = re.search(r'Ship Date:\s*(\d+/\d+/\d+)', line)
+            if m and not result["ship_date"]:
+                result["ship_date"] = m.group(1); pending_ship = False
+            elif re.search(r'Ship Date:\s*$', line):
+                pending_ship = True
+            elif pending_ship:
+                m2 = re.match(r'(\d+/\d+/\d+)', line.strip())
+                if m2: result["ship_date"] = m2.group(1)
+                pending_ship = False
+            # Cancel Date inline or next line
+            m = re.search(r'Cancel Date:\s*(\d+/\d+/\d+)', line)
+            if m and not result["cancel_date"]:
+                result["cancel_date"] = m.group(1); pending_cancel = False
+            elif re.search(r'Cancel Date:\s*$', line):
+                pending_cancel = True
+            elif pending_cancel:
+                m2 = re.match(r'(\d+/\d+/\d+)', line.strip())
+                if m2: result["cancel_date"] = m2.group(1)
+                pending_cancel = False
+            if re.search(r'ARAMARK', line) and not result["customer_name"]:
+                result["customer_name"] = line.split('  ')[0].strip()[:60]
+
+        SIZE_SET = {"XS","XXS","S","M","L","XL","XXL","2XL","3XL","4XL","5XL","OS","OSFA"}
+        size_norm_h = {"XXL":"2XL","3X":"3XL","4X":"4XL","5X":"5XL","2X":"2XL"}
+
+        # Style code pattern: HP followed by letters/digits, optional hyphen+suffix
+        style_pat = re.compile(r'(HP[A-Z0-9]+(?:[- ][A-Z]{2,5})?)')
+
+        for line in text_lines:
+            line = line.strip()
+            # Clean common OCR artifacts in style codes: § -> 5, $ -> S
+            line = re.sub(r'HP[A-Z]*[§$]', lambda m: m.group(0).replace('§','5').replace('$','5'), line)
+            # Must have a style code
+            sm = style_pat.search(line)
+            if not sm:
+                continue
+            style_raw = sm.group(1).replace(' ', '-')
+            # Size: word after the style code match, normalized
+            after_style = line[sm.end():].strip()
+            parts = after_style.split()
+            if not parts:
+                continue
+            # Size is first token after style (OCR may lowercase: 's' -> 'S')
+            size_raw = parts[0].upper()
+            size = size_norm_h.get(size_raw, size_raw)
+            if size not in SIZE_SET:
+                # Try second token
+                if len(parts) > 1:
+                    size_raw2 = parts[1].upper()
+                    size = size_norm_h.get(size_raw2, size_raw2)
+                    if size not in SIZE_SET:
+                        size = "OS"
+                    parts = parts[1:]  # shift
+                else:
+                    size = "OS"
+            parts = parts[1:]  # skip size token
+
+            # Extract numbers from remaining tokens, ignoring OCR noise like 'i)', ')', 'ny)'
+            nums = []
+            for p in parts:
+                clean = re.sub(r'[^0-9.]', '', p)
+                if clean and re.match(r'^\d+\.?\d*$', clean):
+                    nums.append(float(clean))
+            # Need at least qty and cost
+            # Pattern: qty [0_noise] qty cost ext — or just qty cost
+            qty = 0; cost = 0.0
+            if len(nums) >= 4:
+                # qty 0 qty cost ext -> take nums[0] as qty, nums[-2] as cost
+                qty = int(nums[0])
+                cost = nums[-2]
+            elif len(nums) >= 2:
+                qty = int(nums[0])
+                cost = nums[1]
+            elif len(nums) == 1:
+                qty = int(nums[0])
+
+            if qty > 0:
+                # Recalculate cost from ext/qty when ext is available (avoids OCR cost errors)
+                if len(nums) >= 2:
+                    ext = nums[-1]
+                    recalc = ext / qty if qty else 0
+                    # Use recalc only if it differs significantly from parsed cost (OCR error)
+                    if cost > 0 and abs(recalc - cost) / cost > 0.05:
+                        cost = round(recalc, 2)
+                    elif cost == 0:
+                        cost = round(recalc, 2)
+                product_lines.append({
+                    'style': style_raw, 'size': size, 'qty': qty,
+                    'cost': cost, 'msrp': 0, 'desc': ''
+                })
     elif has_follett:
         # ── Format F: Follett / "P/O Number -", style with "/", size "Color / Size" ──
         result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""

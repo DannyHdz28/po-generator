@@ -32,9 +32,11 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
 GLOSSARY = {
     # ── Encabezado ────────────────────────────────────────────
     "po_number": [
-        "PO#","PO NUMBER","PO NO","PO NO.","PO NAME",
-        "PURCHASE ORDER NUMBER","PURCHASE ORDER","ORDER NUMBER",
-        "ORDER #","ORDER NO","P.O. NUMBER","P.O.#","PO:",
+        "PO NUMBER","PO NO","PO NO.","PO NAME",
+        "PURCHASE ORDER NUMBER","ORDER NUMBER",
+        "P.O. NUMBER","P.O.#",
+        "CUSTOMER PO",  # Boom format
+        # Short/ambiguous removed: "PO#","PO:","ORDER #","ORDER NO" -- cause false positives
     ],
     "po_date": [
         "PO DATE","ORDER DATE","PO CREATION DATE","CREATION DATE",
@@ -44,7 +46,7 @@ GLOSSARY = {
     "ship_date": [
         # Glosario: Start Ship, Ship Window Open, In-DC Date, Delivery Date, Dispatch Date
         # Fitters usa "Start Date", Kings usa "Ship Date", Dallas Cowboys usa "Delivery Date"
-        "SHIP DATE","START DATE","START SHIP","SHIP WINDOW OPEN",
+        "SHIP DATE","START DATE","START SHIP","START SHIP DATE","SHIP WINDOW OPEN",
         "IN-DC DATE","IN DC DATE","DELIVERY DATE","DISPATCH DATE",
         "SHIP BY","DELIVER BY","IN HANDS DATE","IN-HANDS DATE",
         "IN HANDS","NEED BY DATE","ON FLOOR",
@@ -100,6 +102,7 @@ GLOSSARY = {
         # Glosario: Item Description, Product Name, Article Description
         "ITEM DESCRIPTION","ITEM DESC","DESCRIPTION","DESC",
         "PRODUCT NAME","PRODUCT TITLE","PRODUCT DESCRIPTION","ARTICLE DESCRIPTION",
+        "NAME",  # Boom format uses "name" column for product description
         "DETALLE DEL PRODUCTO","DESCRIPCION DEL ARTICULO",
     ],
     "col_color": [
@@ -128,7 +131,8 @@ GLOSSARY = {
         "COST W/ DISC","COST W/DISC","COST W/DISC.","COST WITH DISCOUNT",
         "NET COST","NET UNIT COST","UNIT COST","UNIT PRICE",
         "PRICE PER UNIT","WHOLESALE NET","DISCOUNTED PRICE",
-        "SALE PRICE",  # Boom format: Sale Price = net cost
+        "SALE PRICE",  # Boom format
+        "LINE COST",  # Maxima internal template (Borregos, Guerreros, Dicass)
         "WHOLESALE","COST","WS","PRICE",
         "COSTO NETO","PRECIO NETO","COSTO UNITARIO","MAYOREO NETO",
     ],
@@ -142,7 +146,7 @@ GLOSSARY = {
     "col_total_cost": [
         # Glosario: Extended Cost, Ext Cost, Line Total, Total Dollars
         "TOTAL DOLLARS","EXT COST","EXTENDED COST","LINE TOTAL",
-        "TOTAL COST","SUBTOTAL","LINE TOTAL","TOT. BUY",  # USSF format
+        "TOTAL COST","SUBTOTAL","LINE TOTAL","TOT. BUY","TOTAL NET COST",
         "COSTO EXTENDIDO","COSTO POR RENGLON",
     ],
     "col_total_retail": [
@@ -221,6 +225,7 @@ def matches_any(text, keywords):
     t = text.upper().strip().rstrip(":")  # strip trailing colon for label matching
     for kw in keywords:
         k = kw.upper().strip().rstrip(":")
+        if not k: continue
         if t == k or t.startswith(k) or k in t:
             return True
     return False
@@ -259,6 +264,9 @@ def fmtDate(v):
     if isinstance(v, (datetime, date)):
         return v.strftime('%m/%d/%Y')
     s = str(v).strip().lstrip("'")
+    # Single char or very short — not a date
+    if len(s) <= 2:
+        return ""
     # Remove time portion
     s = re.sub(r'\s+\d{2}:\d{2}:\d{2}.*', '', s)
     # Convert ISO format 2026-10-01 -> 10/01/2026
@@ -310,6 +318,8 @@ _LABEL_WORDS = {
     "PO NUMBER","PO NAME","PO DATE","PO#","SHIP DATE","CANCEL DATE",
     "BILL TO","SHIP TO","VENDOR","BRAND","BUYER","TERMS","CURRENCY",
     "DESCRIPTION","STYLE","QTY","COST","RETAIL","MSRP","UPC",
+    "UNITS","AMOUNT","START DATE","PO NAME","BORREGOS","CIMACO",
+    "VENDOR:","TERMS:","CREDIT CARD","NET 30","NET 45","NET 60",
 }
 
 def find_header_raw(rows, keywords, max_rows=25):
@@ -330,7 +340,10 @@ def find_header_raw(rows, keywords, max_rows=25):
                     if vs in ("", "0", "None"):
                         continue
                     # Skip values that look like column labels
-                    if vs.upper() in _LABEL_WORDS:
+                    vs_upper = vs.upper()
+                    is_label = (vs_upper in _LABEL_WORDS or 
+                                any(vs_upper.startswith(lw) for lw in ["TERMS:", "VENDOR:", "SHIP TO:", "BILL TO:", "CANCEL", "NET "]))
+                    if is_label:
                         continue
                     # Return original value for dates (preserve datetime objects)
                     if isinstance(v, (datetime, date)):
@@ -457,6 +470,10 @@ def parse_po_pdf(file_bytes):
     # Format D (Caesars): style+desc+size+$cost+qty+UPC all in one line
     caesars_pat = re.compile(r'[A-Z]{3,6}\d{6,}-[A-Z]{2,4}.+\$\d+\.\d{2}.+\d{12,}')
     has_caesars = any(caesars_pat.search(line) for line in text_lines)
+    # Format E (Shiekh LAB): "P.O. #" header, style repeated twice, tallas en siguiente línea
+    has_shiekh_lab = any(re.match(r'P\.O\. #\s+\S+', line) for line in text_lines)
+    # Format F (Follett): "P/O Number -", style has "/" like "70102/CSNUCRD"
+    has_follett = any('P/O Number' in line or 'P/O Location' in line for line in text_lines)
 
     product_lines = []
 
@@ -657,6 +674,136 @@ def parse_po_pdf(file_bytes):
                 product_lines.append({'style':f"{style}-{color}",'size':size,'qty':qty,'cost':cost,'msrp':0,'desc':desc})
 
 
+    elif has_shiekh_lab:
+        # ── Format E: Shiekh LAB / "P.O. #" header, style repeated twice ──
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        # PO# from "P.O. # SHK-LABSACC-JULY26"
+        for line in text_lines:
+            m = re.match(r'P\.O\. #\s+(\S+)', line)
+            if m and not result["po_number"]:
+                result["po_number"] = m.group(1)
+            m = re.search(r'Ship Date:\s+(\S+)', line)
+            if m and not result["ship_date"]: result["ship_date"] = m.group(1)
+            m = re.search(r'Cancel Date:\s+(\S+)', line)
+            if m and not result["cancel_date"]: result["cancel_date"] = m.group(1)
+            # Customer from "TO: LAB LAB co OFF WHITE SHIP TO: Shiekh Shoes"
+            m = re.search(r'SHIP TO:\s+(.+)', line)
+            if m and not result["customer_name"]:
+                result["customer_name"] = m.group(1).strip()
+
+        shiekh_style_pat = re.compile(r'^([A-Z]{2,6}\d{3,}[-]\w+)\s')
+        size_norm_sh = {"1SIZE":"OS","OSFA":"OS","M":"M","L":"L","S":"S","XL":"XL",
+                        "XXL":"2XL","2XL":"2XL","3XL":"3XL","XS":"XS","SM":"S","MD":"M","LG":"L"}
+        i = 0
+        while i < len(text_lines):
+            line = text_lines[i]
+            sm = shiekh_style_pat.match(line)
+            if sm:
+                style = sm.group(1)
+                # Find second occurrence for cost/qty
+                second_idx = line.find(style, sm.end())
+                if second_idx > 0:
+                    after = line[second_idx + len(style):].strip()
+                    nums = re.findall(r'[\d,]+\.?\d*', after)
+                    nums_f = [float(n.replace(',','')) for n in nums]
+                    cost = nums_f[0] if nums_f else 0
+                    qty_total = int(nums_f[1]) if len(nums_f) > 1 else 0
+                    msrp = nums_f[-1] if len(nums_f) > 3 else 0
+                else:
+                    cost = 0; qty_total = 0; msrp = 0
+                # Get description
+                desc_start = sm.end()
+                desc_end = line.find(style, desc_start) if second_idx > 0 else len(line)
+                desc = line[desc_start:desc_end].strip()
+                # Next lines: sizes + quantities
+                sizes = {}
+                if i+2 < len(text_lines):
+                    size_line = text_lines[i+1].strip()
+                    qty_line  = text_lines[i+2].strip()
+                    # Check if they look like sizes
+                    sz_words = size_line.split()
+                    qt_words = qty_line.split()
+                    if all(w.upper() in size_norm_sh or w == "1SIZE" for w in sz_words):
+                        if size_line.upper() in ("1SIZE","OSFA","ONE SIZE"):
+                            try: sizes["OS"] = int(qty_line)
+                            except: sizes["OS"] = qty_total
+                        else:
+                            for sz, qv in zip(sz_words, qt_words):
+                                norm = size_norm_sh.get(sz.upper(), sz.upper())
+                                try: sizes[norm] = int(qv)
+                                except: pass
+                        i += 3
+                        total_units = sum(sizes.values())
+                    else:
+                        sizes["OS"] = qty_total
+                        total_units = qty_total
+                        i += 1
+                else:
+                    sizes["OS"] = qty_total
+                    total_units = qty_total
+                    i += 1
+                if total_units > 0:
+                    product_lines.append({
+                        'style': style, 'size': '', 'qty': total_units,
+                        'cost': cost, 'msrp': msrp, 'desc': desc,
+                        'sizes_map': sizes
+                    })
+            else:
+                i += 1
+
+    elif has_follett:
+        # ── Format F: Follett / "P/O Number -", style with "/", size "Color / Size" ──
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        result["customer_name"] = ""  # reset — generic block picks up wrong value
+        for line in text_lines:
+            m = re.search(r'P/O Number\s*-\s*(\S+)', line)
+            if m and not result["po_number"]: result["po_number"] = m.group(1)
+            m = re.search(r'Ship Date\s*-\s*(\S+)', line)
+            if m and not result["ship_date"]: result["ship_date"] = m.group(1)
+            m = re.search(r'Cancel Date\s*-\s*(\S+)', line)
+            if m and not result["cancel_date"]: result["cancel_date"] = m.group(1)
+            if 'Ship To:' in line and not result["customer_name"]:
+                idx = text_lines.index(line)
+                if idx+1 < len(text_lines):
+                    result["ship_to"] = text_lines[idx+1].strip()
+                    result["customer_name"] = result["ship_to"]
+
+        follett_style_pat = re.compile(r'^\d+\s+(\S+/\S+)\s+')
+        follett_size_map = {
+            "XSMALL":"XS","XXSMALL":"XXS","SMALL":"S","MEDIUM":"M","LARGE":"L",
+            "XLARGE":"XL","XXLARGE":"2XL","2XLARGE":"2XL","XXXLARGE":"3XL","3XLARGE":"3XL",
+            "XS":"XS","S":"S","M":"M","L":"L","XL":"XL","XXL":"2XL","2XL":"2XL",
+        }
+        for i, line in enumerate(text_lines):
+            fm = follett_style_pat.match(line)
+            if not fm: continue
+            style = fm.group(1)
+            nums = re.findall(r'\d+\.?\d*', line)
+            nums_f = [float(n) for n in nums]
+            qty = int(nums_f[0]) if nums_f else 0
+            cost = next((n for n in nums_f[1:] if 0 < n < 10000 and n != int(n)), 0)
+            msrp = next((n for n in reversed(nums_f) if n != cost and n > 0), 0)
+            # Size from line i+2 "Color / Size" (line i+1 is UPC)
+            size = "OS"
+            for offset in range(1, 8):
+                if i+offset >= len(text_lines): break
+                nxt = text_lines[i+offset]
+                # Skip UPC, /Cont., page headers, PO info lines
+                if any(skip in nxt for skip in ['UPC', '/Cont.', 'POM345', 'Sub Total', 'P/O', 'Purchase Order', '*EMAIL', 'Q t y', 'U n i t']):
+                    continue
+                # Only match "Word / Word" pattern (Color / Size)
+                if re.match(r'^[A-Za-z\s]+ / [A-Za-z]+', nxt.strip()):
+                    sz_raw = nxt.split('/')[-1].strip().upper().replace(' ','')
+                    mapped = follett_size_map.get(sz_raw, sz_raw)
+                    if mapped and mapped != 'CONT.':
+                        size = mapped
+                        break
+            if qty > 0:
+                product_lines.append({
+                    'style': style, 'size': size, 'qty': qty,
+                    'cost': cost, 'msrp': msrp, 'desc': ''
+                })
+
     # Group by style+color
     grouped = OrderedDict()
     for pl in product_lines:
@@ -666,9 +813,15 @@ def parse_po_pdf(file_bytes):
                 'style': k, 'sizes': {}, 'cost': pl['cost'],
                 'msrp': pl['msrp'], 'total': 0, 'desc': pl.get('desc','')
             }
-        sz = pl['size'] or 'OS'
-        grouped[k]['sizes'][sz] = grouped[k]['sizes'].get(sz, 0) + pl['qty']
-        grouped[k]['total'] += pl['qty']
+        # Shiekh LAB has pre-built sizes_map
+        if pl.get('sizes_map'):
+            for sz, qty in pl['sizes_map'].items():
+                grouped[k]['sizes'][sz] = grouped[k]['sizes'].get(sz, 0) + qty
+            grouped[k]['total'] += pl['qty']
+        else:
+            sz = pl['size'] or 'OS'
+            grouped[k]['sizes'][sz] = grouped[k]['sizes'].get(sz, 0) + pl['qty']
+            grouped[k]['total'] += pl['qty']
         if not grouped[k]['cost'] and pl['cost']:
             grouped[k]['cost'] = pl['cost']
         if not grouped[k]['desc'] and pl.get('desc'):
@@ -760,10 +913,11 @@ def parse_po_excel(file_bytes):
         for row in rows[:5]:
             for cell in row:
                 if cell and "PO" in str(cell).upper():
-                    m = re.search(r'PO#?\s*([A-Z0-9][A-Z0-9\s\-]+)', str(cell), re.IGNORECASE)
+                    # Only match if cell STARTS with PO (avoid matching "PO" inside descriptions)
+                    m = re.match(r'PO#?:?\s+([A-Z0-9][A-Z0-9\.\-]+)', str(cell).strip(), re.IGNORECASE)
                     if m:
                         candidate = m.group(1).strip()
-                        if len(candidate) > 2 and candidate.upper() not in ("NAME","NUMBER","DATE","NO"):
+                        if len(candidate) > 2 and candidate.upper() not in ("NAME","NUMBER","DATE","NO","HOODIE","TEE","JACKET"):
                             po_number = candidate
                             break
             if po_number:
@@ -795,7 +949,14 @@ def parse_po_excel(file_bytes):
                 if after and len(after) > 2 and after.upper() not in _LABEL_WORDS:
                     customer_name = after
                     break
-            # Format B: value on next row, same column (Kings)
+            # Format B2: value in next column same row (Guerreros, Borregos, Maxima template)
+            # e.g. col0="Bill To:" col1="DEPORTES MARTI"
+            if j+1 < len(row) and row[j+1] is not None:
+                v = str(row[j+1]).strip()
+                if v and len(v) > 2 and v.upper() not in _LABEL_WORDS:
+                    customer_name = v
+                    break
+            # Format C: value on next row, same column (Kings)
             if i+1 < len(rows) and j < len(rows[i+1]):
                 v = str(rows[i+1][j] or "").strip()
                 if v and len(v) > 2 and v.upper() not in _LABEL_WORDS:
@@ -919,7 +1080,7 @@ def parse_po_excel(file_bytes):
             col_map["size"]         = detect_col(row, ["SIZE"])
             col_map["qty"]          = detect_col(row, GLOSSARY["col_qty"])
             # Detect cost columns — prefer net (COST W/DISC) over gross (COST)
-            net_cost_keywords  = ["COST W/ DISC","COST W/DISC","COST W/DISC.","COST WITH DISCOUNT","NET COST","NET UNIT COST","DISCOUNTED PRICE","WHOLESALE NET"]
+            net_cost_keywords  = ["COST W/ DISC","COST W/DISC","COST W/DISC.","COST WITH DISCOUNT","NET COST","NET UNIT COST","DISCOUNTED PRICE","WHOLESALE NET","LINE COST","SALE PRICE"]
             gross_cost_keywords = ["UNIT COST","UNIT PRICE","PRICE PER UNIT","WHOLESALE","COST","WS","PRICE","COSTO UNITARIO","MAYOREO NETO"]
             col_net  = detect_col(row, net_cost_keywords)
             col_gross = detect_col(row, gross_cost_keywords)
@@ -971,6 +1132,24 @@ def parse_po_excel(file_bytes):
     has_matrix     = any(col_map.get(k) is not None for k in SIZE_KEY_MAP)
     has_size_col   = col_map.get("size") is not None
     has_size_break = col_map.get("size_break") is not None
+
+    # JD Sports format: ship/cancel dates in product table columns
+    # Detect ship_date column in header row
+    if data_header_row is not None:
+        header_row_data = rows[data_header_row]
+        ship_col   = detect_col(header_row_data, GLOSSARY["ship_date"])
+        cancel_col = detect_col(header_row_data, GLOSSARY["cancel_date"])
+        # Read from first data row
+        if ship_col is not None and not result["ship_date"]:
+            for dr in rows[data_header_row+1:data_header_row+3]:
+                if ship_col < len(dr) and dr[ship_col]:
+                    result["ship_date"] = fmtDate(dr[ship_col])
+                    break
+        if cancel_col is not None and not result["cancel_date"]:
+            for dr in rows[data_header_row+1:data_header_row+3]:
+                if cancel_col < len(dr) and dr[cancel_col]:
+                    result["cancel_date"] = fmtDate(dr[cancel_col])
+                    break
 
     # ── 3. Leer filas de productos ───────────────────────────
     lines = []

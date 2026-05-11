@@ -1236,11 +1236,25 @@ def parse_po_pdf(file_bytes):
 def parse_po_excel(file_bytes):
     # Support both .xlsx and legacy .xls
     try:
-        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
         ws = wb.active
-        rows = [[cell.value for cell in row] for row in ws.iter_rows()]
-        all_sheet_rows = [(sn, [[cell.value for cell in row] for row in wb[sn].iter_rows()])
-                          for sn in wb.sheetnames]
+
+        def safe_rows(sheet, max_empty=50):
+            """Read rows stopping after max_empty consecutive empty rows."""
+            result = []; empty_streak = 0
+            for row in sheet.iter_rows():
+                vals = [cell.value for cell in row]
+                if any(v is not None for v in vals):
+                    result.append(vals); empty_streak = 0
+                else:
+                    empty_streak += 1
+                    result.append(vals)
+                    if empty_streak >= max_empty:
+                        break
+            return result
+
+        rows = safe_rows(ws)
+        all_sheet_rows = [(sn, safe_rows(wb[sn])) for sn in wb.sheetnames]
     except Exception:
         try:
             import xlrd

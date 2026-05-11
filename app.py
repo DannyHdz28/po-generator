@@ -499,6 +499,8 @@ def parse_po_pdf(file_bytes):
     has_plu_vlu = any(re.search(r'\bPLU\b', line) and re.search(r'\bVLU\b', line) for line in text_lines)
     # Format H (Aramark): "PURCHASE ORDER # NNNNN", rows: 6-digit# desc STYLE COLOR SIZE qty 0 qty cost ext
     has_aramark = any(re.match(r'PURCHASE ORDER #\s+\d+', line) for line in text_lines)
+    # Format J (Dallas Cowboys new): "Purchase Order PO...", table "Line Item Number Description Style Id ... Size / Color Qty Unit Price Amount"
+    has_dallas_new = any('Style Id' in line and 'Size / Color' in line for line in text_lines)
     # Format I (San Manuel): "PO: PO14299", table header "# VENDOR SKU ITEM SIZE/DIM2 QTY ITEM COST EXT COST"
     has_san_manuel = any('VENDOR SKU' in line and 'EXT COST' in line for line in text_lines) or \
         any('VENDOR SKU' in line and 'EXT COST' in line for line in extract_text_lines)
@@ -612,7 +614,7 @@ def parse_po_pdf(file_bytes):
                                       'cost':cost,'msrp':msrp,'desc':desc})
 
 
-    elif has_col_styles and not has_san_manuel:
+    elif has_col_styles and not has_san_manuel and not has_dallas_new:
         # ── Format A: Fanatics / style as column ──────────────
         col_x = {"style": 399, "size": 620, "qty": 691, "msrp": 724, "cost": 764}
         for key in sorted_keys:
@@ -872,6 +874,76 @@ def parse_po_pdf(file_bytes):
                         'cost': unit_cost, 'msrp': item_retail, 'desc': desc_raw
                     })
                 i += 1
+
+    elif has_dallas_new:
+        # ── Format J: Dallas Cowboys new — "Purchase Order POxxxxxx", Size/Color como "2XL / WHT"
+        result["po_number"] = ""; result["ship_date"] = ""; result["cancel_date"] = ""
+        result["customer_name"] = ""
+
+        for line in text_lines:
+            m = re.search(r'Purchase Order\s+(PO\w+)', line)
+            if m and not result["po_number"]:
+                result["po_number"] = m.group(1)
+            m = re.search(r'Delivery Date\s+(\S+)', line)
+            if m and not result["ship_date"]:
+                result["ship_date"] = m.group(1)
+            m = re.search(r'Cancel Date\s+(\S+)', line)
+            if m and not result["cancel_date"]:
+                result["cancel_date"] = m.group(1)
+            if not result["customer_name"] and 'Dallas Cowboys' in line:
+                result["customer_name"] = "Dallas Cowboys Pro Shops"
+
+        # Table rows: [line#] [itemnum] [desc] [StyleId] [GraphicsCode?] [Size / Color] [qty] EA [price] [amount]
+        # Size/Color: "2XL / WHT", "L / GRY/NVY", "M / NVY"
+        SIZE_MAP_J = {"XXL":"2XL","3X":"3XL","OSFM":"OS","OSF":"OS"}
+        SIZE_SET_J = {"XS","XXS","S","M","L","XL","2XL","3XL","4XL","5XL","OS"}
+        COLOR_MAP_J = {"WHT":"WHT","NVY":"NVY","BLK":"BLK","GRY":"GRY","MDN":"MDN",
+                       "GRY/NVY":"MDN","WBK":"WBK","EGG":"EGG","EBK":"EBK"}
+
+        # Row pattern: starts with line number, has style, "SIZE / COLOR", qty, EA, price, amount
+        row_pat = re.compile(
+            r'^(\d+)\s+\d+\s+.+?\s+([A-Z]{2,4}\d{6,}(?:-[A-Z]{2,4})?)\s+'  # line# itemnum desc style
+            r'(?:[A-Z0-9-]+\s+)?'                                                    # optional graphics code
+            r'(\w+)\s*/\s*([A-Z/]+)\s+'                                           # SIZE / COLOR
+            r'([\d.]+)\s+EA\s+([\d.]+)\s+[\d,.]+\s*$'                        # qty EA price amount
+        )
+
+        header_seen = False
+        for line in text_lines:
+            if 'Style Id' in line and 'Size / Color' in line:
+                header_seen = True
+                continue
+            if not header_seen:
+                continue
+            if re.match(r'^(Total|Subtotal|Charges|Tax|UPC:)', line.strip()):
+                continue
+
+            m = row_pat.match(line.strip())
+            if not m:
+                continue
+
+            _, style_raw, size_raw, color_raw, qty_s, price_s = m.groups()
+            size = SIZE_MAP_J.get(size_raw.upper(), size_raw.upper())
+            if size not in SIZE_SET_J:
+                size = "OS"
+            # Color: take first part before /
+            color = color_raw.split('/')[0].strip() if '/' in color_raw else color_raw.strip()
+            # Build full style with color if not already embedded
+            if '-' not in style_raw:
+                full_style = f"{style_raw}-{color}"
+            else:
+                full_style = style_raw
+
+            try: qty = int(float(qty_s))
+            except: qty = 0
+            try: cost = float(price_s)
+            except: cost = 0.0
+
+            if qty > 0:
+                product_lines.append({
+                    'style': full_style, 'size': size, 'qty': qty,
+                    'cost': cost, 'msrp': 0, 'desc': ''
+                })
 
     elif has_san_manuel:
         # ── Format I: San Manuel / Yaamava — "PO: PONNNNN", tabla con # VENDOR SKU ITEM SIZE/DIM2 QTY ITEM COST EXT COST

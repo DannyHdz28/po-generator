@@ -6,6 +6,7 @@ import streamlit as st
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
+from pptx.util import Emu
 
 # ─── PAGE CONFIG ──────────────────────────────────────────────
 st.set_page_config(page_title="Deck Builder — Pro Standard", page_icon="🏆", layout="wide")
@@ -28,6 +29,24 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
 # ─── CONSTANTS ────────────────────────────────────────────────
 GENDER_CODES = {"M", "W", "K"}
+
+# Cápsulas por cuarto del año. Q1 ya está, Q2-Q4 se llenan cuando salgan.
+CAPSULES_BY_QUARTER = {
+    "Q1": [
+        "TEAM CITY", "FLAGSHIP", "SPRING BREAK", "ULTIMATE FAN",
+        "PRO FILE", "PROPERTY OF", "HERITAGE HUSTLE",
+        "HERITAGE & HUSTLE", "REFLECTION", "FLORAL SPORT",
+    ],
+    "Q2": [],
+    "Q3": [],
+    "Q4": [],
+}
+
+# Tamaño y posición para imágenes insertadas en slides vacías (29.44cm × 19.05cm en (2.21cm, 0)).
+INSERT_LEFT   = Emu(795600)
+INSERT_TOP    = Emu(0)
+INSERT_WIDTH  = Emu(10598400)
+INSERT_HEIGHT = Emu(6858000)
 
 # ─── PARSERS ──────────────────────────────────────────────────
 def norm(s: str) -> str:
@@ -106,21 +125,33 @@ def find_note_match(notes_text: str, merch_map: dict):
 
 
 # ─── PPT OPERATIONS ───────────────────────────────────────────
-def scan_pptx(file_bytes: bytes):
-    """Devuelve lista de slides marcadas con su key de cápsula."""
+def scan_pptx(file_bytes: bytes, known_capsules: list | None = None):
+    """
+    Escanea el PPT. Devuelve:
+      - found:           [{slide, key, capsule, gender}]
+      - missing_gender:  [{slide, capsule}]  (slides con cápsula pero sin M/W/K)
+      - unknown_capsule: [{slide, capsule}]  (cápsula no está en known_capsules; solo si la lista no está vacía)
+    """
     prs = Presentation(io.BytesIO(file_bytes))
-    found = []
+    known_norm = {norm(c) for c in (known_capsules or [])}
+    found, missing_gender, unknown_capsule = [], [], []
+
     for idx, slide in enumerate(prs.slides, start=1):
         if not slide.has_notes_slide:
             continue
         notes = slide.notes_slide.notes_text_frame.text or ""
-        # busca la primera línea que parezca cápsula
         for raw in notes.split("\n"):
             p = parse_note_line(raw)
-            if p and p["capsule"]:
-                found.append({"slide": idx, "key": p["key"]})
-                break
-    return found
+            if not (p and p["capsule"]):
+                continue
+            found.append({"slide": idx, "key": p["key"], "capsule": p["capsule"], "gender": p["gender"]})
+            if not p["gender"]:
+                missing_gender.append({"slide": idx, "capsule": p["capsule"]})
+            if known_norm and norm(p["capsule"]) not in known_norm:
+                unknown_capsule.append({"slide": idx, "capsule": p["capsule"]})
+            break
+
+    return found, missing_gender, unknown_capsule
 
 
 def replace_picture_blob(shape, new_blob: bytes) -> bool:
@@ -163,15 +194,26 @@ def generate_deck(ppt_bytes: bytes, merch_map: dict):
         used[matched_key] += 1
 
         pics = [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
-        if not pics:
-            log.append(("warn", f"Slide {idx} ({matched_key}): no hay imagen para reemplazar"))
-            continue
 
-        if replace_picture_blob(pics[0], img["bytes"]):
-            replaced += 1
-            log.append(("ok", f"Slide {idx} → {matched_key} → {img['name']}"))
+        if pics:
+            # CASO 1: ya hay imagen → reemplaza bytes (conserva tamaño/posición original)
+            if replace_picture_blob(pics[0], img["bytes"]):
+                replaced += 1
+                log.append(("ok", f"Slide {idx} → {matched_key} → {img['name']}"))
+            else:
+                log.append(("err", f"Slide {idx} ({matched_key}): no se pudo reemplazar"))
         else:
-            log.append(("err", f"Slide {idx} ({matched_key}): no se pudo reemplazar"))
+            # CASO 2: slide vacía → inserta imagen nueva con tamaño/posición estándar
+            try:
+                slide.shapes.add_picture(
+                    io.BytesIO(img["bytes"]),
+                    left=INSERT_LEFT, top=INSERT_TOP,
+                    width=INSERT_WIDTH, height=INSERT_HEIGHT,
+                )
+                replaced += 1
+                log.append(("ok", f"Slide {idx} → {matched_key} → {img['name']} (insertada)"))
+            except Exception as e:
+                log.append(("err", f"Slide {idx} ({matched_key}): error insertando — {e}"))
 
     out = io.BytesIO()
     prs.save(out)
@@ -195,6 +237,17 @@ with st.expander("Cómo preparar tu PPT", expanded=False):
    - Varias:  `NFL_LAS VEGAS RAIDERS_FLAGSHIP_M_001.jpg`, `..._002.jpg`, ...
     """)
 
+# ─── SIDEBAR: cuarto y cápsulas esperadas ─────────────────────
+with st.sidebar:
+    st.markdown('<div class="section-h" style="font-size:1.1rem; margin-top:0;">CONFIG</div>', unsafe_allow_html=True)
+    quarter = st.selectbox("Cuarto del año", ["Q1", "Q2", "Q3", "Q4"], index=0)
+    known_capsules = CAPSULES_BY_QUARTER.get(quarter, [])
+    if known_capsules:
+        st.caption(f"Cápsulas esperadas en {quarter}:")
+        st.markdown("<br>".join(f"· {c}" for c in known_capsules), unsafe_allow_html=True)
+    else:
+        st.caption(f"⚠ Sin cápsulas definidas para {quarter}. La app igual funciona, pero no validará nombres.")
+
 # ─── STEP 1 ───────────────────────────────────────────────────
 st.markdown('<div class="section-h">1 · PPT BASE</div>', unsafe_allow_html=True)
 ppt_file = st.file_uploader("Sube tu PPT base (.pptx)", type=["pptx"], key="ppt")
@@ -204,15 +257,30 @@ slides_found = []
 if ppt_file:
     ppt_bytes = ppt_file.getvalue()
     try:
-        slides_found = scan_pptx(ppt_bytes)
+        slides_found, missing_gender, unknown_capsule = scan_pptx(ppt_bytes, known_capsules)
         if slides_found:
             st.markdown(f'<span class="pill-ok">✓ {len(slides_found)} SLIDE(S) MARCADAS</span>', unsafe_allow_html=True)
             with st.container():
                 for s in slides_found:
-                    st.caption(f"Slide {s['slide']} → {s['key']}")
+                    gender_tag = s["gender"] or "—"
+                    st.caption(f"Slide {s['slide']} → {s['capsule']} · género: {gender_tag}")
         else:
             st.markdown('<span class="pill-warn">⚠ SIN NOTAS DE CÁPSULA</span>', unsafe_allow_html=True)
             st.caption("Verifica que las slides de merchboard tengan en las Notas algo como `FLAGSHIP M`.")
+
+        if missing_gender:
+            st.warning(
+                f"⚠ {len(missing_gender)} slide(s) tienen cápsula pero **sin género (M/W/K)**:\n\n"
+                + "\n".join(f"- Slide {m['slide']} → `{m['capsule']}`" for m in missing_gender)
+                + "\n\nAgrega el género en las notas para evitar matches ambiguos."
+            )
+
+        if unknown_capsule:
+            st.warning(
+                f"⚠ {len(unknown_capsule)} slide(s) con cápsulas no listadas en **{quarter}**:\n\n"
+                + "\n".join(f"- Slide {u['slide']} → `{u['capsule']}`" for u in unknown_capsule)
+                + f"\n\nSi son correctas, agrégalas a `CAPSULES_BY_QUARTER['{quarter}']` en el código."
+            )
     except Exception as e:
         st.error(f"Error leyendo el PPT: {e}")
 
@@ -283,6 +351,7 @@ else:
         mapping_preview.append({
             "Slide": s["slide"],
             "Nota": s["key"],
+            "Género": s["gender"] or "—",
             "Cápsula matcheada": match or "—",
             "Imágenes disponibles": len(merch_map.get(match, [])) if match else 0,
         })

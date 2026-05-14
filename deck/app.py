@@ -240,7 +240,7 @@ def replace_picture_blob(shape, new_blob: bytes) -> bool:
     r_id = blip.get(qn("r:embed"))
     if not r_id:
         return False
-    img_part       = shape.part.related_parts[r_id]
+    img_part       = shape.part._rels[r_id].target_part
     img_part._blob = new_blob
     return True
 

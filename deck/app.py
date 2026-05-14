@@ -421,7 +421,7 @@ if modo == "🖥️  Desde el servidor":
             if all_capsule_folders:
                 sel_capsule_folders = st.multiselect(
                     "Cápsula(s) (puedes seleccionar varias)", all_capsule_folders,
-                    default=all_capsule_folders, key="srv_capsule",
+                    default=[], key="srv_capsule",
                     help="Selecciona las cápsulas que quieres incluir en el deck"
                 )
             else:

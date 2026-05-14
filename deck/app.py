@@ -103,7 +103,7 @@ def extract_capsule_from_folder(folder_name: str, category: str) -> str:
     """Extrae clave de cápsula del nombre de carpeta del servidor.
     Ej: '01·01 - Q1 2027 MENS TEAM CITY' + 'MENS' → 'TEAM CITY M'
     """
-    n = re.sub(r'^[\d·\s]+[-–]\s*', '', folder_name).strip()
+    n = re.sub(r'^.+?[-–]\s*', '', folder_name).strip()
     n = re.sub(r'^Q\d\s+\d{4}\s+', '', n, flags=re.IGNORECASE).strip()
     cat_upper = category.upper()
     if n.upper().startswith(cat_upper + " "):

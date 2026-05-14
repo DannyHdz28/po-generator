@@ -34,10 +34,8 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 GENDER_CODES = {"M", "W", "K"}
 IMAGE_EXTS   = {".jpg", ".jpeg", ".png"}
 
-# Ruta base por defecto del servidor de la empresa
 SERVER_BASE_DEFAULT = r"\\10.0.1.30\Sales Toolkits\PROSTANDARD\USA_CANADA\CATALOGS"
 
-# Cápsulas por cuarto. Q2-Q4 se llenan cuando lleguen los nombres.
 CAPSULES_BY_QUARTER = {
     "Q1": [
         "TEAM CITY", "FLAGSHIP", "SPRING BREAK", "ULTIMATE FAN",
@@ -49,7 +47,6 @@ CAPSULES_BY_QUARTER = {
     "Q4": [],
 }
 
-# Tamaño estándar para slides sin imagen previa (29.44cm × 19.05cm @ x=2.21cm, y=0)
 INSERT_LEFT   = Emu(795600)
 INSERT_TOP    = Emu(0)
 INSERT_WIDTH  = Emu(10598400)
@@ -62,19 +59,30 @@ def norm(s: str) -> str:
 
 
 def parse_merch_name(filename: str):
-    """Parsea LIGA_EQUIPO_CAPSULA[_GENERO][_NNN].ext"""
+    """Parsea LIGA_EQUIPO_CAPSULA[_GENERO][_NNN].ext
+    Soporta tanto M_001 como M-00 como sufijo de género+número."""
     base = re.sub(r"\.[^.]+$", "", filename)
     parts = base.split("_")
     if len(parts) < 3:
         return None
     liga    = parts[0].upper().strip()
     end_idx = len(parts) - 1
-    if parts[end_idx].isdigit():
+    gender  = None
+
+    # Detecta sufijo tipo "M-00", "W-01", "K-002"
+    gender_num = re.match(r'^([MWK])-(\d+)$', parts[end_idx], re.IGNORECASE)
+    if gender_num:
+        gender  = gender_num.group(1).upper()
         end_idx -= 1
-    gender = None
-    if end_idx >= 0 and parts[end_idx].upper() in GENDER_CODES:
+    elif parts[end_idx].isdigit():
+        end_idx -= 1
+        if end_idx >= 0 and parts[end_idx].upper() in GENDER_CODES:
+            gender  = parts[end_idx].upper()
+            end_idx -= 1
+    elif parts[end_idx].upper() in GENDER_CODES:
         gender  = parts[end_idx].upper()
         end_idx -= 1
+
     if end_idx < 1:
         return None
     team    = parts[1].strip()
@@ -86,7 +94,6 @@ def parse_merch_name(filename: str):
 
 
 def parse_note_line(line: str):
-    """Parsea una línea de notas del PPT → {key, capsule, gender}"""
     n = norm(line).strip()
     n = re.sub(r"\s+\d+$", "", n).strip()
     if len(n) < 2:
@@ -99,7 +106,6 @@ def parse_note_line(line: str):
 
 
 def find_note_match(notes_text: str, merch_map: dict):
-    """Primera línea de notas que matchee una key del merch_map."""
     if not notes_text:
         return None
     for raw in notes_text.split("\n"):
@@ -119,7 +125,6 @@ def find_note_match(notes_text: str, merch_map: dict):
 
 # ─── SERVER HELPERS ───────────────────────────────────────────
 def list_dirs(path: Path) -> list[str]:
-    """Lista nombres de subcarpetas ordenados."""
     try:
         return sorted([d.name for d in path.iterdir() if d.is_dir()])
     except PermissionError:
@@ -131,7 +136,6 @@ def list_dirs(path: Path) -> list[str]:
 
 
 def list_images(path: Path) -> list[Path]:
-    """Lista archivos de imagen ordenados por nombre."""
     try:
         return sorted(
             [f for f in path.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
@@ -141,12 +145,9 @@ def list_images(path: Path) -> list[Path]:
 
 
 def find_merchboards_dir(capsule_path: Path) -> Path | None:
-    """Busca la carpeta _MERCHBOARDS dentro de la cápsula."""
-    # intento directo
     direct = capsule_path / "_MERCHBOARDS"
     if direct.is_dir():
         return direct
-    # búsqueda flexible (por si el nombre varía un poco)
     try:
         for d in capsule_path.iterdir():
             if d.is_dir() and "MERCHBOARD" in d.name.upper():
@@ -157,10 +158,9 @@ def find_merchboards_dir(capsule_path: Path) -> Path | None:
 
 
 def build_merch_map_from_paths(image_paths: list[Path]) -> tuple[dict, str | None, list[str]]:
-    """Construye merch_map leyendo los archivos del servidor."""
-    merch_map    = {}
+    merch_map     = {}
     detected_team = None
-    unmatched    = []
+    unmatched     = []
 
     for img_path in image_paths:
         parsed = parse_merch_name(img_path.name)
@@ -232,7 +232,7 @@ def generate_deck(ppt_bytes: bytes, merch_map: dict):
 
         imgs = merch_map[matched_key]
         if used[matched_key] >= len(imgs):
-            log.append(("warn", f"Slide {idx} ({matched_key}): sin más imágenes disponibles"))
+            log.append(("warn", f"Slide {idx} ({matched_key}): no more images available"))
             continue
 
         img = imgs[used[matched_key]]
@@ -245,7 +245,7 @@ def generate_deck(ppt_bytes: bytes, merch_map: dict):
                 replaced += 1
                 log.append(("ok", f"Slide {idx} → {matched_key} → {img['name']}"))
             else:
-                log.append(("err", f"Slide {idx} ({matched_key}): no se pudo reemplazar"))
+                log.append(("err", f"Slide {idx} ({matched_key}): could not replace image"))
         else:
             try:
                 slide.shapes.add_picture(
@@ -254,9 +254,9 @@ def generate_deck(ppt_bytes: bytes, merch_map: dict):
                     width=INSERT_WIDTH, height=INSERT_HEIGHT,
                 )
                 replaced += 1
-                log.append(("ok", f"Slide {idx} → {matched_key} → {img['name']} (insertada)"))
+                log.append(("ok", f"Slide {idx} → {matched_key} → {img['name']} (inserted)"))
             except Exception as e:
-                log.append(("err", f"Slide {idx} ({matched_key}): error insertando — {e}"))
+                log.append(("err", f"Slide {idx} ({matched_key}): error inserting — {e}"))
 
     out = io.BytesIO()
     prs.save(out)
@@ -276,8 +276,8 @@ with st.expander("Cómo preparar tu PPT", expanded=False):
 1. En cada slide de **merchboard** agrega en las **Notas** la cápsula + género:
    `FLAGSHIP M`, `SPRING BREAK W`, `TEAM CITY K`  (M = Mens, W = Womens, K = Kids).
 2. Las imágenes en el servidor deben seguir el naming:
-   `LIGA_EQUIPO_CAPSULA_GENERO[_NNN].jpg`
-   Ej: `NFL_DALLAS COWBOYS_TEAM CITY_M_001.jpg`
+   `LIGA_EQUIPO_CAPSULA_GENERO-NNN.png`
+   Ej: `NBA_CLEVELAND CAVALIERS_TEAM CITY_M-00.png`
     """)
 
 # ─── SIDEBAR ──────────────────────────────────────────────────
@@ -342,8 +342,8 @@ modo = st.radio(
     horizontal=True,
 )
 
-merch_map     = {}
-detected_team = None
+merch_map       = {}
+detected_team   = None
 unmatched_names = []
 
 # ── MODO SERVIDOR ─────────────────────────────────────────────
@@ -353,76 +353,115 @@ if modo == "🖥️  Desde el servidor":
     if not base_path.exists():
         st.error(f"No se puede acceder a la ruta: `{server_base}`\n\nVerifica que estés conectado a la red de la empresa.")
     else:
-        # Nivel 1: Género
-        genders = list_dirs(base_path)
-        if genders:
-            sel_gender = st.selectbox("Género", genders, key="srv_gender")
+        # Nivel 1: Categoría (MENS, WOMENS, KIDS, etc.) — selección múltiple
+        categories = list_dirs(base_path)
+        sel_categories = []
+        if categories:
+            sel_categories = st.multiselect(
+                "Categoría (puedes seleccionar varias)",
+                categories,
+                key="srv_gender",
+                help="Ej: selecciona MENS + WOMENS + KIDS para cargar las 3 a la vez",
+            )
         else:
-            st.warning("No se encontraron carpetas de género.")
-            sel_gender = None
+            st.warning("No se encontraron carpetas de categoría.")
 
-        # Nivel 2: Año
+        # Nivel 2: Año (basado en la primera categoría seleccionada)
         sel_year = None
-        if sel_gender:
-            year_path = base_path / sel_gender
+        if sel_categories:
+            year_path = base_path / sel_categories[0]
             years     = list_dirs(year_path)
             if years:
                 sel_year = st.selectbox("Año", years, key="srv_year")
             else:
                 st.warning(f"No hay subcarpetas en {year_path}")
 
-        # Nivel 3: Cuarto (automático desde sidebar)
-        sel_capsule_folder = None
-        if sel_year:
-            q_path = base_path / sel_gender / sel_year / quarter
-            if not q_path.is_dir():
-                st.warning(f"No existe la carpeta `{quarter}` en {base_path / sel_gender / sel_year}")
-                st.caption(f"Carpetas disponibles: {', '.join(list_dirs(base_path / sel_gender / sel_year))}")
+        # Nivel 3: Cápsulas — selección múltiple (agrega carpetas de todas las categorías)
+        sel_capsule_folders = []
+        if sel_year and sel_categories:
+            all_capsule_folders = set()
+            for cat in sel_categories:
+                q_path = base_path / cat / sel_year / quarter
+                if q_path.is_dir():
+                    for folder in list_dirs(q_path):
+                        all_capsule_folders.add(folder)
+
+            if all_capsule_folders:
+                sel_capsule_folders = st.multiselect(
+                    "Cápsula(s) (puedes seleccionar varias)",
+                    sorted(all_capsule_folders),
+                    key="srv_capsule",
+                    help="Selecciona una o más cápsulas",
+                )
             else:
-                st.caption(f"📂 `{q_path}`")
+                st.warning(f"No hay carpetas de cápsula para {quarter} en las categorías seleccionadas.")
 
-                # Nivel 4: Carpeta de cápsula
-                capsule_folders = list_dirs(q_path)
-                if capsule_folders:
-                    sel_capsule_folder = st.selectbox(
-                        "Cápsula (carpeta)",
-                        capsule_folders,
-                        key="srv_capsule",
-                        help="Selecciona la carpeta de la cápsula que quieres usar",
-                    )
-                else:
-                    st.warning(f"No hay carpetas de cápsula en {q_path}")
+        # Nivel 4: Liga y Equipo (basados en la primera combinación válida)
+        sel_league = None
+        sel_team   = None
 
-        # Nivel 5: Liga y Equipo
-        if sel_capsule_folder:
-            capsule_full_path = base_path / sel_gender / sel_year / quarter / sel_capsule_folder
-            mb_path           = find_merchboards_dir(capsule_full_path)
+        if sel_capsule_folders and sel_categories and sel_year:
+            # Encontrar el primer _MERCHBOARDS válido para listar ligas
+            ref_mb_path = None
+            for cat in sel_categories:
+                for cap in sel_capsule_folders:
+                    cap_path = base_path / cat / sel_year / quarter / cap
+                    mb = find_merchboards_dir(cap_path)
+                    if mb:
+                        ref_mb_path = mb
+                        break
+                if ref_mb_path:
+                    break
 
-            if not mb_path:
-                st.warning(f"No se encontró carpeta `_MERCHBOARDS` dentro de `{sel_capsule_folder}`")
+            if not ref_mb_path:
+                st.warning("No se encontró carpeta _MERCHBOARDS en ninguna de las cápsulas seleccionadas.")
             else:
-                leagues = list_dirs(mb_path)
+                leagues = list_dirs(ref_mb_path)
                 if leagues:
                     sel_league = st.selectbox("Liga", leagues, key="srv_league")
                 else:
-                    st.warning(f"No hay ligas en {mb_path}")
-                    sel_league = None
+                    st.warning(f"No hay ligas en {ref_mb_path}")
 
                 if sel_league:
-                    league_path = mb_path / sel_league
-                    teams       = list_dirs(league_path)
-                    if teams:
-                        sel_team = st.selectbox("Equipo", teams, key="srv_team")
-                    else:
-                        st.warning(f"No hay equipos en {league_path}")
-                        sel_team = None
+                    # Encontrar equipos en la primera liga válida
+                    ref_league_path = None
+                    for cat in sel_categories:
+                        for cap in sel_capsule_folders:
+                            cap_path = base_path / cat / sel_year / quarter / cap
+                            mb = find_merchboards_dir(cap_path)
+                            if mb:
+                                lp = mb / sel_league
+                                if lp.is_dir():
+                                    ref_league_path = lp
+                                    break
+                        if ref_league_path:
+                            break
 
+                    if ref_league_path:
+                        teams = list_dirs(ref_league_path)
+                        if teams:
+                            sel_team = st.selectbox("Equipo", teams, key="srv_team")
+                        else:
+                            st.warning(f"No hay equipos en {ref_league_path}")
+
+                    # Cargar imágenes de TODAS las combinaciones categoría × cápsula
                     if sel_team:
-                        team_path    = league_path / sel_team
-                        image_paths  = list_images(team_path)
+                        all_image_paths = []
+                        loaded_paths    = []
+                        for cat in sel_categories:
+                            for cap in sel_capsule_folders:
+                                team_dir = base_path / cat / sel_year / quarter / cap
+                                mb = find_merchboards_dir(team_dir)
+                                if mb:
+                                    team_path = mb / sel_league / sel_team
+                                    if team_path.is_dir():
+                                        imgs = list_images(team_path)
+                                        if imgs:
+                                            all_image_paths.extend(imgs)
+                                            loaded_paths.append(f"{cat} / {cap}")
 
-                        if image_paths:
-                            merch_map, detected_team, unmatched_names = build_merch_map_from_paths(image_paths)
+                        if all_image_paths:
+                            merch_map, detected_team, unmatched_names = build_merch_map_from_paths(all_image_paths)
 
                             st.markdown(
                                 f'<div class="team-badge">'
@@ -431,6 +470,7 @@ if modo == "🖥️  Desde el servidor":
                                 f'{sel_team}</span></div>',
                                 unsafe_allow_html=True,
                             )
+                            st.caption(f"Rutas cargadas: {', '.join(loaded_paths)}")
                             st.write("")
 
                             if merch_map:
@@ -439,15 +479,15 @@ if modo == "🖥️  Desde el servidor":
                                     with cols[i % len(cols)]:
                                         st.markdown(
                                             f'<div class="capsule-card match"><h4>{k}</h4>'
-                                            f'<p>{len(v)} imagen(es)</p></div>',
+                                            f'<p>{len(v)} image(s)</p></div>',
                                             unsafe_allow_html=True,
                                         )
                             if unmatched_names:
-                                with st.expander(f"⚠ {len(unmatched_names)} sin naming correcto"):
+                                with st.expander(f"⚠ {len(unmatched_names)} without correct naming"):
                                     for n in unmatched_names:
                                         st.caption(n)
                         else:
-                            st.warning(f"No hay imágenes JPG/PNG en `{team_path}`")
+                            st.warning(f"No hay imágenes JPG/PNG para {sel_team} en las rutas seleccionadas.")
 
 # ── MODO MANUAL ───────────────────────────────────────────────
 else:
@@ -486,12 +526,12 @@ else:
             for i, (k, v) in enumerate(merch_map.items()):
                 with cols[i % len(cols)]:
                     st.markdown(
-                        f'<div class="capsule-card match"><h4>{k}</h4><p>{len(v)} imagen(es)</p></div>',
+                        f'<div class="capsule-card match"><h4>{k}</h4><p>{len(v)} image(s)</p></div>',
                         unsafe_allow_html=True,
                     )
 
         if unmatched_names:
-            with st.expander(f"⚠ {len(unmatched_names)} sin naming correcto"):
+            with st.expander(f"⚠ {len(unmatched_names)} without correct naming"):
                 for n in unmatched_names:
                     st.caption(n)
 
@@ -503,7 +543,6 @@ if not ppt_bytes:
 elif not merch_map:
     st.caption("Selecciona o sube los merchboards en el paso 2.")
 else:
-    # Preview del mapping antes de generar
     mapping_preview = []
     for s in slides_found:
         match = find_note_match(s["key"], merch_map)
@@ -543,7 +582,7 @@ else:
                 )
 
         base_name = re.sub(r"\.pptx$", "", ppt_file.name, flags=re.IGNORECASE)
-        out_name  = f"{base_name} — {detected_team or 'EQUIPO'}.pptx"
+        out_name  = f"{base_name} — {detected_team or 'TEAM'}.pptx"
         st.download_button(
             "⬇ Descargar PPT",
             data=out,

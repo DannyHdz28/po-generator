@@ -136,13 +136,14 @@ def find_note_match(notes_text: str, merch_map: dict):
         for k in merch_map:
             if norm(k) == norm_p:
                 return k
-        # 4. Gender-agnostic: compara solo la parte de cápsula ignorando género
-        norm_capsule = norm(p["capsule"])
-        for k in merch_map:
-            k_parts = norm(k).split()
-            k_cap = " ".join(k_parts[:-1]) if k_parts and k_parts[-1] in GENDER_CODES else norm(k)
-            if k_cap == norm_capsule:
-                return k
+        # 4. Gender-agnostic: solo cuando la nota NO tiene género especificado
+        if not p["gender"]:
+            norm_capsule = norm(p["capsule"])
+            for k in merch_map:
+                k_parts = norm(k).split()
+                k_cap = " ".join(k_parts[:-1]) if k_parts and k_parts[-1] in GENDER_CODES else norm(k)
+                if k_cap == norm_capsule:
+                    return k
     return None
 
 

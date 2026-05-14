@@ -511,16 +511,15 @@ if modo == "🖥️  Desde el servidor":
         sel_team   = None
 
         if sel_capsule_folders:
-            leagues = []
+            leagues_set = set()
             for cap in sel_capsule_folders:
                 for label, info in capsule_folders_by_cat.items():
                     if cap in info["folders"]:
                         mb = find_merchboards_dir(info["q_path"] / cap)
                         if mb:
-                            leagues = list_dirs(mb)
-                            break
-                if leagues:
-                    break
+                            for d in list_dirs(mb):
+                                leagues_set.add(d)
+            leagues = sorted(leagues_set)
 
             if leagues:
                 sel_league = st.selectbox("Liga", leagues, key="srv_league")
@@ -528,7 +527,7 @@ if modo == "🖥️  Desde el servidor":
                 st.warning("No se encontró carpeta _MERCHBOARDS en las cápsulas seleccionadas.")
 
             if sel_league:
-                teams = []
+                teams_set = set()
                 for cap in sel_capsule_folders:
                     for label, info in capsule_folders_by_cat.items():
                         if cap in info["folders"]:
@@ -536,10 +535,9 @@ if modo == "🖥️  Desde el servidor":
                             if mb:
                                 league_path = mb / sel_league
                                 if league_path.is_dir():
-                                    teams = list_dirs(league_path)
-                                    break
-                    if teams:
-                        break
+                                    for t in list_dirs(league_path):
+                                        teams_set.add(t)
+                teams = sorted(teams_set)
 
                 if teams:
                     sel_team = st.selectbox("Equipo", teams, key="srv_team")

@@ -263,6 +263,19 @@ def replace_picture_blob(shape, new_blob: bytes) -> bool:
         return False
     img_part       = shape.part._rels[r_id].target_part
     img_part._blob = new_blob
+
+    # Remove crop (srcRect) so the full image shows
+    blip_fill = blip.getparent()
+    src_rect  = blip_fill.find(qn("a:srcRect"))
+    if src_rect is not None:
+        blip_fill.remove(src_rect)
+
+    # Fix position and size to standard merchboard dimensions
+    shape.left   = INSERT_LEFT
+    shape.top    = INSERT_TOP
+    shape.width  = INSERT_WIDTH
+    shape.height = INSERT_HEIGHT
+
     return True
 
 

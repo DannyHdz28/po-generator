@@ -31,8 +31,9 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 # ─── CONSTANTS ────────────────────────────────────────────────
-GENDER_CODES = {"M", "W", "K"}
-IMAGE_EXTS   = {".jpg", ".jpeg", ".png"}
+GENDER_CODES       = {"M", "W", "K"}
+IMAGE_EXTS         = {".jpg", ".jpeg", ".png"}
+CATEGORY_TO_GENDER = {"MENS": "M", "WOMENS": "W", "KIDS": "K"}
 
 # Ruta base por defecto del servidor de la empresa
 SERVER_BASE_DEFAULT = r"\\10.0.1.30\Sales Toolkits\PROSTANDARD\USA_CANADA\CATALOGS"
@@ -98,6 +99,24 @@ def parse_note_line(line: str):
     return {"key": n, "capsule": n, "gender": None}
 
 
+def extract_capsule_from_folder(folder_name: str, category: str) -> str:
+    """Extrae clave de cápsula del nombre de carpeta del servidor.
+    Ej: '01·01 - Q1 2027 MENS TEAM CITY' + 'MENS' → 'TEAM CITY M'
+    """
+    n = re.sub(r'^[\d·\s]+[-–]\s*', '', folder_name).strip()
+    n = re.sub(r'^Q\d\s+\d{4}\s+', '', n, flags=re.IGNORECASE).strip()
+    cat_upper = category.upper()
+    if n.upper().startswith(cat_upper + " "):
+        n = n[len(cat_upper):].strip()
+    elif n.upper() == cat_upper:
+        n = ""
+    gender = CATEGORY_TO_GENDER.get(cat_upper)
+    key = n.upper()
+    if gender and key:
+        key = f"{key} {gender}"
+    return key or folder_name.upper()
+
+
 def find_note_match(notes_text: str, merch_map: dict):
     """Primera línea de notas que matchee una key del merch_map."""
     if not notes_text:
@@ -106,13 +125,23 @@ def find_note_match(notes_text: str, merch_map: dict):
         p = parse_note_line(raw)
         if not p:
             continue
+        # 1. Direct key match
         if p["key"] in merch_map:
             return p["key"]
+        # 2. Capsule match
         if p["capsule"] in merch_map:
             return p["capsule"]
+        # 3. Normalized full-key match
         norm_p = norm(p["key"])
         for k in merch_map:
             if norm(k) == norm_p:
+                return k
+        # 4. Gender-agnostic: compara solo la parte de cápsula ignorando género
+        norm_capsule = norm(p["capsule"])
+        for k in merch_map:
+            k_parts = norm(k).split()
+            k_cap = " ".join(k_parts[:-1]) if k_parts and k_parts[-1] in GENDER_CODES else norm(k)
+            if k_cap == norm_capsule:
                 return k
     return None
 
@@ -353,101 +382,142 @@ if modo == "🖥️  Desde el servidor":
     if not base_path.exists():
         st.error(f"No se puede acceder a la ruta: `{server_base}`\n\nVerifica que estés conectado a la red de la empresa.")
     else:
-        # Nivel 1: Género
-        genders = list_dirs(base_path)
-        if genders:
-            sel_gender = st.selectbox("Género", genders, key="srv_gender")
+        # Nivel 1: Categoría (multiselect)
+        categories = list_dirs(base_path)
+        if categories:
+            sel_categories = st.multiselect(
+                "Categoría (puedes seleccionar varias)", categories,
+                default=categories[:1], key="srv_category",
+                help="MENS, WOMENS, KIDS, etc."
+            )
         else:
-            st.warning("No se encontraron carpetas de género.")
-            sel_gender = None
+            st.warning("No se encontraron carpetas de categoría.")
+            sel_categories = []
 
         # Nivel 2: Año
         sel_year = None
-        if sel_gender:
-            year_path = base_path / sel_gender
+        if sel_categories:
+            year_path = base_path / sel_categories[0]
             years     = list_dirs(year_path)
             if years:
                 sel_year = st.selectbox("Año", years, key="srv_year")
             else:
                 st.warning(f"No hay subcarpetas en {year_path}")
 
-        # Nivel 3: Cuarto (automático desde sidebar)
-        sel_capsule_folder = None
+        # Nivel 3: Cápsulas (multiselect — agrega carpetas de todas las categorías)
+        sel_capsule_folders = []
+        capsule_folders_by_cat = {}  # cat → [folder, ...]
+
         if sel_year:
-            q_path = base_path / sel_gender / sel_year / quarter
-            if not q_path.is_dir():
-                st.warning(f"No existe la carpeta `{quarter}` en {base_path / sel_gender / sel_year}")
-                st.caption(f"Carpetas disponibles: {', '.join(list_dirs(base_path / sel_gender / sel_year))}")
+            for cat in sel_categories:
+                q_path = base_path / cat / sel_year / quarter
+                if q_path.is_dir():
+                    capsule_folders_by_cat[cat] = list_dirs(q_path)
+
+            all_capsule_folders = sorted({
+                f for folders in capsule_folders_by_cat.values() for f in folders
+            })
+
+            if all_capsule_folders:
+                sel_capsule_folders = st.multiselect(
+                    "Cápsula(s) (puedes seleccionar varias)", all_capsule_folders,
+                    default=all_capsule_folders, key="srv_capsule",
+                    help="Selecciona las cápsulas que quieres incluir en el deck"
+                )
             else:
-                st.caption(f"📂 `{q_path}`")
+                st.warning(f"No hay carpetas de cápsula para {quarter} en las categorías seleccionadas.")
 
-                # Nivel 4: Carpeta de cápsula
-                capsule_folders = list_dirs(q_path)
-                if capsule_folders:
-                    sel_capsule_folder = st.selectbox(
-                        "Cápsula (carpeta)",
-                        capsule_folders,
-                        key="srv_capsule",
-                        help="Selecciona la carpeta de la cápsula que quieres usar",
-                    )
-                else:
-                    st.warning(f"No hay carpetas de cápsula en {q_path}")
+        # Nivel 4: Liga y Equipo (desde la primera cápsula válida)
+        sel_league = None
+        sel_team   = None
 
-        # Nivel 5: Liga y Equipo
-        if sel_capsule_folder:
-            capsule_full_path = base_path / sel_gender / sel_year / quarter / sel_capsule_folder
-            mb_path           = find_merchboards_dir(capsule_full_path)
-
-            if not mb_path:
-                st.warning(f"No se encontró carpeta `_MERCHBOARDS` dentro de `{sel_capsule_folder}`")
-            else:
-                leagues = list_dirs(mb_path)
+        if sel_capsule_folders:
+            # Buscar _MERCHBOARDS en la primera cápsula disponible
+            leagues = []
+            for cap in sel_capsule_folders:
+                for cat, folders in capsule_folders_by_cat.items():
+                    if cap in folders:
+                        mb = find_merchboards_dir(base_path / cat / sel_year / quarter / cap)
+                        if mb:
+                            leagues = list_dirs(mb)
+                            break
                 if leagues:
-                    sel_league = st.selectbox("Liga", leagues, key="srv_league")
-                else:
-                    st.warning(f"No hay ligas en {mb_path}")
-                    sel_league = None
+                    break
 
-                if sel_league:
-                    league_path = mb_path / sel_league
-                    teams       = list_dirs(league_path)
+            if leagues:
+                sel_league = st.selectbox("Liga", leagues, key="srv_league")
+            else:
+                st.warning("No se encontró carpeta _MERCHBOARDS en las cápsulas seleccionadas.")
+
+            if sel_league:
+                teams = []
+                for cap in sel_capsule_folders:
+                    for cat, folders in capsule_folders_by_cat.items():
+                        if cap in folders:
+                            mb = find_merchboards_dir(base_path / cat / sel_year / quarter / cap)
+                            if mb:
+                                league_path = mb / sel_league
+                                if league_path.is_dir():
+                                    teams = list_dirs(league_path)
+                                    break
                     if teams:
-                        sel_team = st.selectbox("Equipo", teams, key="srv_team")
-                    else:
-                        st.warning(f"No hay equipos en {league_path}")
-                        sel_team = None
+                        break
 
-                    if sel_team:
-                        team_path    = league_path / sel_team
-                        image_paths  = list_images(team_path)
+                if teams:
+                    sel_team = st.selectbox("Equipo", teams, key="srv_team")
+                else:
+                    st.warning(f"No hay equipos en {sel_league}.")
 
-                        if image_paths:
-                            merch_map, detected_team, unmatched_names = build_merch_map_from_paths(image_paths)
+        # Nivel 5: Cargar imágenes de todas las cápsulas seleccionadas
+        if sel_team and sel_league:
+            loaded_routes = []
 
-                            st.markdown(
-                                f'<div class="team-badge">'
-                                f'<span style="color:#888;font-size:0.7rem;letter-spacing:1px;">EQUIPO · </span>'
-                                f'<span style="color:#e8c84a;font-family:\'Bebas Neue\',sans-serif;letter-spacing:1px;">'
-                                f'{sel_team}</span></div>',
-                                unsafe_allow_html=True,
-                            )
-                            st.write("")
+            for cap_folder in sel_capsule_folders:
+                for cat, folders in capsule_folders_by_cat.items():
+                    if cap_folder not in folders:
+                        continue
+                    mb = find_merchboards_dir(base_path / cat / sel_year / quarter / cap_folder)
+                    if not mb:
+                        continue
+                    team_path = mb / sel_league / sel_team
+                    images    = list_images(team_path)
+                    if not images:
+                        continue
+                    cap_key = extract_capsule_from_folder(cap_folder, cat)
+                    loaded_routes.append(f"{cat} / {cap_folder}")
+                    for img in images:
+                        merch_map.setdefault(cap_key, []).append({
+                            "name":  img.name,
+                            "bytes": img.read_bytes(),
+                        })
+                    detected_team = sel_team
 
-                            if merch_map:
-                                cols = st.columns(min(4, len(merch_map)))
-                                for i, (k, v) in enumerate(merch_map.items()):
-                                    with cols[i % len(cols)]:
-                                        st.markdown(
-                                            f'<div class="capsule-card match"><h4>{k}</h4>'
-                                            f'<p>{len(v)} imagen(es)</p></div>',
-                                            unsafe_allow_html=True,
-                                        )
-                            if unmatched_names:
-                                with st.expander(f"⚠ {len(unmatched_names)} sin naming correcto"):
-                                    for n in unmatched_names:
-                                        st.caption(n)
-                        else:
-                            st.warning(f"No hay imágenes JPG/PNG en `{team_path}`")
+            for k in merch_map:
+                merch_map[k].sort(key=lambda x: x["name"])
+
+            if detected_team:
+                st.markdown(
+                    f'<div class="team-badge">'
+                    f'<span style="color:#888;font-size:0.7rem;letter-spacing:1px;">EQUIPO · </span>'
+                    f'<span style="color:#e8c84a;font-family:\'Bebas Neue\',sans-serif;letter-spacing:1px;">'
+                    f'{sel_team}</span></div>',
+                    unsafe_allow_html=True,
+                )
+                if loaded_routes:
+                    st.caption("Rutas cargadas: " + ", ".join(loaded_routes))
+                st.write("")
+
+            if merch_map:
+                cols = st.columns(min(4, len(merch_map)))
+                for i, (k, v) in enumerate(merch_map.items()):
+                    with cols[i % len(cols)]:
+                        st.markdown(
+                            f'<div class="capsule-card match"><h4>{k}</h4>'
+                            f'<p>{len(v)} imagen(es)</p></div>',
+                            unsafe_allow_html=True,
+                        )
+            elif sel_team:
+                st.warning(f"No se encontraron imágenes para {sel_team} en las cápsulas seleccionadas.")
 
 # ── MODO MANUAL ───────────────────────────────────────────────
 else:

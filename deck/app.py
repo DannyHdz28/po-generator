@@ -154,6 +154,28 @@ def list_images(path: Path) -> list[Path]:
         return []
 
 
+def has_subcategories(cat_path: Path) -> bool:
+    """True si la carpeta de categoría tiene subcarpetas antes del año (ej: KIDS/BOYS, KIDS/GIRLS)."""
+    folders = list_dirs(cat_path)
+    if not folders:
+        return False
+    return not re.match(r'^\d{4}$', folders[0])
+
+
+def find_quarter_folder(year_path: Path, quarter: str) -> Path | None:
+    """Encuentra la carpeta del cuarto aunque tenga nombre extendido (ej: 'Q1 2027' en vez de 'Q1')."""
+    exact = year_path / quarter
+    if exact.is_dir():
+        return exact
+    try:
+        for d in year_path.iterdir():
+            if d.is_dir() and d.name.upper().startswith(quarter.upper()):
+                return d
+    except Exception:
+        pass
+    return None
+
+
 def find_merchboards_dir(capsule_path: Path) -> Path | None:
     direct = capsule_path / "_MERCHBOARDS"
     if direct.is_dir():
@@ -363,7 +385,7 @@ if modo == "🖥️  Desde el servidor":
     if not base_path.exists():
         st.error(f"No se puede acceder a la ruta: `{server_base}`\n\nVerifica que estés conectado a la red de la empresa.")
     else:
-        # Nivel 1: Categoría (MENS, WOMENS, KIDS, etc.) — selección múltiple
+        # Nivel 1: Categoría — selección múltiple
         categories = list_dirs(base_path)
         sel_categories = []
         if categories:
@@ -371,29 +393,64 @@ if modo == "🖥️  Desde el servidor":
                 "Categoría (puedes seleccionar varias)",
                 categories,
                 key="srv_gender",
-                help="Ej: selecciona MENS + WOMENS + KIDS para cargar las 3 a la vez",
+                help="Ej: MENS + WOMENS + KIDS para cargar las 3 a la vez",
             )
         else:
             st.warning("No se encontraron carpetas de categoría.")
 
-        # Nivel 2: Año (basado en la primera categoría seleccionada)
+        # Nivel 2 (opcional): Subcategoría — solo aparece si alguna categoría la tiene
+        # Ej: KIDS tiene BOYS / GIRLS / KIDS / PLAYER N&N antes del año
+        sel_subcategories = {}  # {cat: [subcats]} para categorías que las necesitan
+        cats_need_subcat  = [c for c in sel_categories if has_subcategories(base_path / c)]
+
+        if cats_need_subcat:
+            all_subcats = set()
+            for cat in cats_need_subcat:
+                for s in list_dirs(base_path / cat):
+                    all_subcats.add(s)
+            sel_subcat_list = st.multiselect(
+                "Subcategoría (puedes seleccionar varias)",
+                sorted(all_subcats),
+                key="srv_subcat",
+                help="Ej: BOYS + GIRLS + KIDS dentro de la categoría KIDS",
+            )
+            for cat in cats_need_subcat:
+                sel_subcategories[cat] = sel_subcat_list
+
+        # Construir rutas efectivas por categoría (resuelve el nivel extra si aplica)
+        def get_cat_base_paths() -> list[Path]:
+            paths = []
+            for cat in sel_categories:
+                cat_path = base_path / cat
+                if cat in sel_subcategories:
+                    for sub in sel_subcategories[cat]:
+                        p = cat_path / sub
+                        if p.is_dir():
+                            paths.append(p)
+                else:
+                    paths.append(cat_path)
+            return paths
+
+        # Nivel 3: Año
         sel_year = None
-        if sel_categories:
-            year_path = base_path / sel_categories[0]
-            years     = list_dirs(year_path)
+        cat_base_paths = get_cat_base_paths() if sel_categories else []
+        if cat_base_paths:
+            # Años disponibles basados en la primera ruta efectiva
+            years = list_dirs(cat_base_paths[0])
             if years:
                 sel_year = st.selectbox("Año", years, key="srv_year")
             else:
-                st.warning(f"No hay subcarpetas en {year_path}")
+                st.warning(f"No hay subcarpetas de año en {cat_base_paths[0]}")
 
-        # Nivel 3: Cápsulas — selección múltiple (agrega carpetas de todas las categorías)
+        # Nivel 4: Cápsulas — selección múltiple
+        # Busca la carpeta del cuarto por nombre (soporta "Q1" y "Q1 2027")
         sel_capsule_folders = []
-        if sel_year and sel_categories:
+        if sel_year and cat_base_paths:
             all_capsule_folders = set()
-            for cat in sel_categories:
-                q_path = base_path / cat / sel_year / quarter
-                if q_path.is_dir():
-                    for folder in list_dirs(q_path):
+            for cb in cat_base_paths:
+                q_folder = find_quarter_folder(cb / sel_year, quarter)
+                if q_folder and q_folder.is_dir():
+                    for folder in list_dirs(q_folder):
                         all_capsule_folders.add(folder)
 
             if all_capsule_folders:
@@ -406,20 +463,21 @@ if modo == "🖥️  Desde el servidor":
             else:
                 st.warning(f"No hay carpetas de cápsula para {quarter} en las categorías seleccionadas.")
 
-        # Nivel 4: Liga y Equipo (basados en la primera combinación válida)
+        # Nivel 5: Liga y Equipo
         sel_league = None
         sel_team   = None
 
-        if sel_capsule_folders and sel_categories and sel_year:
-            # Encontrar el primer _MERCHBOARDS válido para listar ligas
+        if sel_capsule_folders and cat_base_paths and sel_year:
+            # Primera combinación válida para listar ligas
             ref_mb_path = None
-            for cat in sel_categories:
+            for cb in cat_base_paths:
                 for cap in sel_capsule_folders:
-                    cap_path = base_path / cat / sel_year / quarter / cap
-                    mb = find_merchboards_dir(cap_path)
-                    if mb:
-                        ref_mb_path = mb
-                        break
+                    q_folder = find_quarter_folder(cb / sel_year, quarter)
+                    if q_folder:
+                        mb = find_merchboards_dir(q_folder / cap)
+                        if mb:
+                            ref_mb_path = mb
+                            break
                 if ref_mb_path:
                     break
 
@@ -433,17 +491,17 @@ if modo == "🖥️  Desde el servidor":
                     st.warning(f"No hay ligas en {ref_mb_path}")
 
                 if sel_league:
-                    # Encontrar equipos en la primera liga válida
                     ref_league_path = None
-                    for cat in sel_categories:
+                    for cb in cat_base_paths:
                         for cap in sel_capsule_folders:
-                            cap_path = base_path / cat / sel_year / quarter / cap
-                            mb = find_merchboards_dir(cap_path)
-                            if mb:
-                                lp = mb / sel_league
-                                if lp.is_dir():
-                                    ref_league_path = lp
-                                    break
+                            q_folder = find_quarter_folder(cb / sel_year, quarter)
+                            if q_folder:
+                                mb = find_merchboards_dir(q_folder / cap)
+                                if mb:
+                                    lp = mb / sel_league
+                                    if lp.is_dir():
+                                        ref_league_path = lp
+                                        break
                         if ref_league_path:
                             break
 
@@ -454,21 +512,22 @@ if modo == "🖥️  Desde el servidor":
                         else:
                             st.warning(f"No hay equipos en {ref_league_path}")
 
-                    # Cargar imágenes de TODAS las combinaciones categoría × cápsula
+                    # Cargar imágenes de TODAS las combinaciones
                     if sel_team:
                         all_image_paths = []
                         loaded_paths    = []
-                        for cat in sel_categories:
+                        for cb in cat_base_paths:
                             for cap in sel_capsule_folders:
-                                team_dir = base_path / cat / sel_year / quarter / cap
-                                mb = find_merchboards_dir(team_dir)
-                                if mb:
-                                    team_path = mb / sel_league / sel_team
-                                    if team_path.is_dir():
-                                        imgs = list_images(team_path)
-                                        if imgs:
-                                            all_image_paths.extend(imgs)
-                                            loaded_paths.append(f"{cat} / {cap}")
+                                q_folder = find_quarter_folder(cb / sel_year, quarter)
+                                if q_folder:
+                                    mb = find_merchboards_dir(q_folder / cap)
+                                    if mb:
+                                        team_path = mb / sel_league / sel_team
+                                        if team_path.is_dir():
+                                            imgs = list_images(team_path)
+                                            if imgs:
+                                                all_image_paths.extend(imgs)
+                                                loaded_paths.append(f"{cb.name} / {cap}")
 
                         if all_image_paths:
                             merch_map, detected_team, unmatched_names = build_merch_map_from_paths(all_image_paths)

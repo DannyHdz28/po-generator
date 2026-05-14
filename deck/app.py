@@ -99,17 +99,28 @@ def parse_note_line(line: str):
     return {"key": n, "capsule": n, "gender": None}
 
 
+CAT_FOLDER_PREFIXES = {
+    "MENS":   ["MENS", "MNS"],
+    "WOMENS": ["WOMENS", "WMNS", "WNS"],
+    "KIDS":   ["KIDS", "KDS"],
+}
+
+
 def extract_capsule_from_folder(folder_name: str, category: str) -> str:
     """Extrae clave de cápsula del nombre de carpeta del servidor.
     Ej: '01·01 - Q1 2027 MENS TEAM CITY' + 'MENS' → 'TEAM CITY M'
+         '01·01 - Q1 2027 WMNS FLORAL SPORT' + 'WOMENS' → 'FLORAL SPORT W'
     """
     n = re.sub(r'^.+?[-–]\s*', '', folder_name).strip()
     n = re.sub(r'^Q\d\s+\d{4}\s+', '', n, flags=re.IGNORECASE).strip()
     cat_upper = category.upper()
-    if n.upper().startswith(cat_upper + " "):
-        n = n[len(cat_upper):].strip()
-    elif n.upper() == cat_upper:
-        n = ""
+    for prefix in CAT_FOLDER_PREFIXES.get(cat_upper, [cat_upper]):
+        if n.upper().startswith(prefix + " "):
+            n = n[len(prefix):].strip()
+            break
+        elif n.upper() == prefix:
+            n = ""
+            break
     gender = CATEGORY_TO_GENDER.get(cat_upper)
     key = n.upper()
     if gender and key:
@@ -144,6 +155,15 @@ def find_note_match(notes_text: str, merch_map: dict):
                 k_cap = " ".join(k_parts[:-1]) if k_parts and k_parts[-1] in GENDER_CODES else norm(k)
                 if k_cap == norm_capsule:
                     return k
+        # 5. Partial word match: nota abreviada (ej: "HERITAGE M" → "HERITAGE & HUSTLE M")
+        note_cap_words = norm(p["capsule"]).split()
+        for k in merch_map:
+            k_parts = norm(k).split()
+            k_gender = k_parts[-1] if k_parts and k_parts[-1] in GENDER_CODES else None
+            k_cap_words = k_parts[:-1] if k_gender else k_parts
+            if (k_cap_words[:len(note_cap_words)] == note_cap_words
+                    and (not p["gender"] or p["gender"] == k_gender)):
+                return k
     return None
 
 

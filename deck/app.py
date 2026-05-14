@@ -33,7 +33,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 # ─── CONSTANTS ────────────────────────────────────────────────
 GENDER_CODES       = {"M", "W", "K"}
 IMAGE_EXTS         = {".jpg", ".jpeg", ".png"}
-CATEGORY_TO_GENDER = {"MENS": "M", "WOMENS": "W", "KIDS": "K"}
+CATEGORY_TO_GENDER = {"MENS": "M", "WOMENS": "W", "KIDS": "K", "BOYS": "K", "GIRLS": "K"}
 
 # Ruta base por defecto del servidor de la empresa
 SERVER_BASE_DEFAULT = r"\\10.0.1.30\Sales Toolkits\PROSTANDARD\USA_CANADA\CATALOGS"
@@ -103,6 +103,8 @@ CAT_FOLDER_PREFIXES = {
     "MENS":   ["MENS", "MNS"],
     "WOMENS": ["WOMENS", "WMNS", "WNS"],
     "KIDS":   ["KIDS", "KDS"],
+    "BOYS":   ["BOYS"],
+    "GIRLS":  ["GIRLS"],
 }
 
 
@@ -168,6 +170,20 @@ def find_note_match(notes_text: str, merch_map: dict):
 
 
 # ─── SERVER HELPERS ───────────────────────────────────────────
+def find_quarter_dir(year_path: Path, quarter: str) -> Path | None:
+    """Encuentra la carpeta del cuarto, maneja 'Q1' y 'Q1 2027'."""
+    direct = year_path / quarter
+    if direct.is_dir():
+        return direct
+    try:
+        for d in year_path.iterdir():
+            if d.is_dir() and d.name.upper().startswith(quarter.upper()):
+                return d
+    except Exception:
+        pass
+    return None
+
+
 def list_dirs(path: Path) -> list[str]:
     """Lista nombres de subcarpetas ordenados."""
     try:
@@ -428,28 +444,57 @@ if modo == "🖥️  Desde el servidor":
             st.warning("No se encontraron carpetas de categoría.")
             sel_categories = []
 
-        # Nivel 2: Año
+        # Nivel 2: Año (toma del primer cat que no sea KIDS, o del primer sub-cat de KIDS)
         sel_year = None
         if sel_categories:
-            year_path = base_path / sel_categories[0]
-            years     = list_dirs(year_path)
-            if years:
-                sel_year = st.selectbox("Año", years, key="srv_year")
+            non_kids = [c for c in sel_categories if c.upper() != "KIDS"]
+            if non_kids:
+                year_base = base_path / non_kids[0]
             else:
-                st.warning(f"No hay subcarpetas en {year_path}")
+                kids_subs = list_dirs(base_path / "KIDS")
+                year_base = base_path / "KIDS" / kids_subs[0] if kids_subs else None
+            if year_base and year_base.is_dir():
+                years = list_dirs(year_base)
+                if years:
+                    sel_year = st.selectbox("Año", years, key="srv_year")
 
-        # Nivel 3: Cápsulas (multiselect — agrega carpetas de todas las categorías)
-        sel_capsule_folders = []
-        capsule_folders_by_cat = {}  # cat → [folder, ...]
+        # Nivel 2.5: Sub-categoría KIDS (solo si KIDS está seleccionado)
+        kids_sub_selection = []
+        if sel_year and any(c.upper() == "KIDS" for c in sel_categories):
+            kids_subs = list_dirs(base_path / "KIDS")
+            if kids_subs:
+                kids_sub_selection = st.multiselect(
+                    "Sub-categoría KIDS", kids_subs,
+                    default=[], key="srv_kids_sub",
+                    help="BOYS, GIRLS, KIDS"
+                )
 
+        # Construir fuentes efectivas: label → q_path
+        sources = {}  # {label: quarter_path}
         if sel_year:
             for cat in sel_categories:
-                q_path = base_path / cat / sel_year / quarter
-                if q_path.is_dir():
-                    capsule_folders_by_cat[cat] = list_dirs(q_path)
+                if cat.upper() == "KIDS":
+                    for sub in kids_sub_selection:
+                        q_dir = find_quarter_dir(base_path / cat / sub / sel_year, quarter)
+                        if q_dir:
+                            sources[sub] = q_dir
+                else:
+                    q_dir = find_quarter_dir(base_path / cat / sel_year, quarter)
+                    if q_dir:
+                        sources[cat] = q_dir
+
+        # Nivel 3: Cápsulas (multiselect — agrega carpetas de todas las fuentes)
+        sel_capsule_folders = []
+        capsule_folders_by_cat = {}  # label → {"q_path": Path, "folders": [...]}
+
+        if sources:
+            for label, q_path in sources.items():
+                folders = list_dirs(q_path)
+                if folders:
+                    capsule_folders_by_cat[label] = {"q_path": q_path, "folders": folders}
 
             all_capsule_folders = sorted({
-                f for folders in capsule_folders_by_cat.values() for f in folders
+                f for info in capsule_folders_by_cat.values() for f in info["folders"]
             })
 
             if all_capsule_folders:
@@ -461,17 +506,16 @@ if modo == "🖥️  Desde el servidor":
             else:
                 st.warning(f"No hay carpetas de cápsula para {quarter} en las categorías seleccionadas.")
 
-        # Nivel 4: Liga y Equipo (desde la primera cápsula válida)
+        # Nivel 4: Liga y Equipo
         sel_league = None
         sel_team   = None
 
         if sel_capsule_folders:
-            # Buscar _MERCHBOARDS en la primera cápsula disponible
             leagues = []
             for cap in sel_capsule_folders:
-                for cat, folders in capsule_folders_by_cat.items():
-                    if cap in folders:
-                        mb = find_merchboards_dir(base_path / cat / sel_year / quarter / cap)
+                for label, info in capsule_folders_by_cat.items():
+                    if cap in info["folders"]:
+                        mb = find_merchboards_dir(info["q_path"] / cap)
                         if mb:
                             leagues = list_dirs(mb)
                             break
@@ -486,9 +530,9 @@ if modo == "🖥️  Desde el servidor":
             if sel_league:
                 teams = []
                 for cap in sel_capsule_folders:
-                    for cat, folders in capsule_folders_by_cat.items():
-                        if cap in folders:
-                            mb = find_merchboards_dir(base_path / cat / sel_year / quarter / cap)
+                    for label, info in capsule_folders_by_cat.items():
+                        if cap in info["folders"]:
+                            mb = find_merchboards_dir(info["q_path"] / cap)
                             if mb:
                                 league_path = mb / sel_league
                                 if league_path.is_dir():
@@ -502,23 +546,23 @@ if modo == "🖥️  Desde el servidor":
                 else:
                     st.warning(f"No hay equipos en {sel_league}.")
 
-        # Nivel 5: Cargar imágenes de todas las cápsulas seleccionadas
+        # Nivel 5: Cargar imágenes
         if sel_team and sel_league:
             loaded_routes = []
 
             for cap_folder in sel_capsule_folders:
-                for cat, folders in capsule_folders_by_cat.items():
-                    if cap_folder not in folders:
+                for label, info in capsule_folders_by_cat.items():
+                    if cap_folder not in info["folders"]:
                         continue
-                    mb = find_merchboards_dir(base_path / cat / sel_year / quarter / cap_folder)
+                    mb = find_merchboards_dir(info["q_path"] / cap_folder)
                     if not mb:
                         continue
                     team_path = mb / sel_league / sel_team
                     images    = list_images(team_path)
                     if not images:
                         continue
-                    cap_key = extract_capsule_from_folder(cap_folder, cat)
-                    loaded_routes.append(f"{cat} / {cap_folder}")
+                    cap_key = extract_capsule_from_folder(cap_folder, label)
+                    loaded_routes.append(f"{label} / {cap_folder}")
                     for img in images:
                         merch_map.setdefault(cap_key, []).append({
                             "name":  img.name,

@@ -31,8 +31,12 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 # ─── CONSTANTS ────────────────────────────────────────────────
-GENDER_CODES = {"M", "W", "K"}
-IMAGE_EXTS   = {".jpg", ".jpeg", ".png"}
+GENDER_CODES   = {"M", "W", "K"}
+GENDER_PREFIX_MAP = {
+    "M": "M", "W": "W", "K": "K",
+    "KB": "K", "KG": "K", "KT": "K",  # Kids Boys, Kids Girls, Kids Toddler → K
+}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 SERVER_BASE_DEFAULT = r"\\10.0.1.30\Sales Toolkits\PROSTANDARD\USA_CANADA\CATALOGS"
 
@@ -60,7 +64,8 @@ def norm(s: str) -> str:
 
 def parse_merch_name(filename: str):
     """Parsea LIGA_EQUIPO_CAPSULA[_GENERO][_NNN].ext
-    Soporta tanto M_001 como M-00 como sufijo de género+número."""
+    Soporta M_001, M-00, KB-00, KG-00 como sufijos de género+número.
+    Elimina prefijos MENS/WOMENS/KIDS del nombre de cápsula."""
     base = re.sub(r"\.[^.]+$", "", filename)
     parts = base.split("_")
     if len(parts) < 3:
@@ -69,10 +74,11 @@ def parse_merch_name(filename: str):
     end_idx = len(parts) - 1
     gender  = None
 
-    # Detecta sufijo tipo "M-00", "W-01", "K-002"
-    gender_num = re.match(r'^([MWK])-(\d+)$', parts[end_idx], re.IGNORECASE)
+    # Detecta sufijo tipo "M-00", "W-01", "K-002", "KB-00", "KG-00"
+    gender_num = re.match(r'^(M|W|K[BGT]?)-(\d+)$', parts[end_idx], re.IGNORECASE)
     if gender_num:
-        gender  = gender_num.group(1).upper()
+        raw    = gender_num.group(1).upper()
+        gender = GENDER_PREFIX_MAP.get(raw, raw[0])
         end_idx -= 1
     elif parts[end_idx].isdigit():
         end_idx -= 1
@@ -87,6 +93,10 @@ def parse_merch_name(filename: str):
         return None
     team    = parts[1].strip()
     capsule = " ".join(parts[2:end_idx + 1]).upper().strip()
+
+    # Elimina prefijos de género del nombre de cápsula (ej: "MENS TEAM CITY" → "TEAM CITY")
+    capsule = re.sub(r'^(MENS|WOMENS|KIDS|BOYS|GIRLS)\s+', '', capsule).strip()
+
     if not capsule:
         return None
     key = capsule + (f" {gender}" if gender else "")

@@ -62,40 +62,53 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[&\-]", " ", s.upper())).strip()
 
 
+GENDER_ALL_CODES = {"M", "W", "K", "KB", "BK", "KG", "GK", "KT"}
+
+
 def parse_merch_name(filename: str):
-    """Parsea LIGA_EQUIPO_CAPSULA[_GENERO][_NNN].ext
-    Soporta M_001, M-00, KB-00, KG-00 como sufijos de género+número.
-    Elimina prefijos MENS/WOMENS/KIDS del nombre de cápsula."""
-    base = re.sub(r"\.[^.]+$", "", filename)
+    """Parsea LIGA_EQUIPO_CAPSULA_GENERO[-NN].ext
+    - Ignora sufijo numérico (-00, -01, _001, etc.)
+    - Códigos KB/BK/KG/GK/KT se normalizan a K
+    - Elimina prefijos MENS/WOMENS/KIDS/BOYS/GIRLS del nombre de cápsula
+    """
+    base  = re.sub(r"\.[^.]+$", "", filename)
     parts = base.split("_")
     if len(parts) < 3:
         return None
+
     liga    = parts[0].upper().strip()
     end_idx = len(parts) - 1
     gender  = None
 
-    # Detecta sufijo tipo "M-00", "W-01", "K-002", "KB-00", "KG-00"
-    gender_num = re.match(r'^(M|W|K[BGT]?)-(\d+)$', parts[end_idx], re.IGNORECASE)
-    if gender_num:
-        raw    = gender_num.group(1).upper()
+    # Última parte: puede ser "M", "M-00", "KB-01", "001", etc.
+    last = parts[end_idx].upper().strip()
+
+    # Caso 1: GENERO-NUMERO (M-00, KB-01, etc.)
+    m = re.match(r'^(M|W|K[BGT]?|BK|GK)-?\d+$', last)
+    if m:
+        raw    = m.group(1)
         gender = GENDER_PREFIX_MAP.get(raw, raw[0])
         end_idx -= 1
-    elif parts[end_idx].isdigit():
+    # Caso 2: solo GENERO (M, W, K, KB, etc.)
+    elif last in GENDER_ALL_CODES:
+        gender = GENDER_PREFIX_MAP.get(last, last[0])
         end_idx -= 1
-        if end_idx >= 0 and parts[end_idx].upper() in GENDER_CODES:
-            gender  = parts[end_idx].upper()
-            end_idx -= 1
-    elif parts[end_idx].upper() in GENDER_CODES:
-        gender  = parts[end_idx].upper()
+    # Caso 3: solo número (001, 00, etc.) — quita el número, luego revisa género
+    elif last.isdigit():
         end_idx -= 1
+        if end_idx >= 0:
+            prev = parts[end_idx].upper().strip()
+            if prev in GENDER_ALL_CODES:
+                gender = GENDER_PREFIX_MAP.get(prev, prev[0])
+                end_idx -= 1
 
     if end_idx < 1:
         return None
     team    = parts[1].strip()
     capsule = " ".join(parts[2:end_idx + 1]).upper().strip()
 
-    # Elimina prefijos de género del nombre de cápsula (ej: "MENS TEAM CITY" → "TEAM CITY")
-    capsule = re.sub(r'^(MENS|WOMENS|KIDS|BOYS|GIRLS)\s+', '', capsule).strip()
+    # Elimina prefijos de género del nombre de cápsula
+    capsule = re.sub(r'^(MENS|WOMENS|WMNS|KIDS|BOYS|GIRLS|MEN|WOMEN)\s+', '', capsule).strip()
 
     if not capsule:
         return None
@@ -116,19 +129,43 @@ def parse_note_line(line: str):
 
 
 def find_note_match(notes_text: str, merch_map: dict):
+    """Busca match entre la nota y las claves del merch_map.
+    Orden: 1) key exacto  2) cápsula exacta  3) normalizado  4) match parcial (prefijo cápsula + género)
+    """
     if not notes_text:
         return None
     for raw in notes_text.split("\n"):
         p = parse_note_line(raw)
         if not p:
             continue
+
+        # 1) Match exacto
         if p["key"] in merch_map:
             return p["key"]
         if p["capsule"] in merch_map:
             return p["capsule"]
-        norm_p = norm(p["key"])
+
+        # 2) Match normalizado
+        norm_key = norm(p["key"])
         for k in merch_map:
-            if norm(k) == norm_p:
+            if norm(k) == norm_key:
+                return k
+
+        # 3) Match parcial: cápsula de la nota es prefijo de la cápsula de la imagen
+        #    y el género coincide. Ej: nota "HERITAGE M" matchea "HERITAGE & HUSTLE M".
+        note_cap_norm = norm(p["capsule"])
+        if not note_cap_norm:
+            continue
+        for k in merch_map:
+            kp = parse_note_line(k)
+            if not kp:
+                continue
+            if p["gender"] and kp["gender"] and p["gender"] != kp["gender"]:
+                continue
+            if not p["gender"] and kp["gender"]:
+                continue
+            img_cap_norm = norm(kp["capsule"])
+            if img_cap_norm.startswith(note_cap_norm + " ") or img_cap_norm == note_cap_norm:
                 return k
     return None
 

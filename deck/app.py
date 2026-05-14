@@ -282,6 +282,23 @@ def replace_picture_blob(shape, new_blob: bytes) -> bool:
         return False
     img_part       = shape.part.related_part(r_id)
     img_part._blob = new_blob
+
+    # Elimina recorte (srcRect) si existe
+    for src_rect in shape._element.findall(".//" + qn("a:srcRect")):
+        src_rect.getparent().remove(src_rect)
+
+    # Fuerza posición y tamaño exactos (del HTML: x=795600 y=0 cx=10598400 cy=6858000)
+    xfrm = shape._element.find(".//" + qn("a:xfrm"))
+    if xfrm is not None:
+        off = xfrm.find(qn("a:off"))
+        ext = xfrm.find(qn("a:ext"))
+        if off is not None:
+            off.set("x", "795600")
+            off.set("y", "0")
+        if ext is not None:
+            ext.set("cx", "10598400")
+            ext.set("cy", "6858000")
+
     return True
 
 

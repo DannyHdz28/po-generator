@@ -109,6 +109,19 @@ CAT_FOLDER_PREFIXES = {
 }
 
 
+def extract_capsule_from_classic(folder_name: str, category: str) -> str:
+    """Extrae clave de cápsula del nombre de carpeta Classic.
+    Ej: '_CLASSIC ICON' + 'MENS' → 'CLASSIC ICON M'
+         'HERITAGE HUSTLE' + 'WOMENS' → 'HERITAGE HUSTLE W'
+    """
+    n = folder_name.lstrip("_").strip()
+    gender = CATEGORY_TO_GENDER.get(category.upper())
+    key = n.upper()
+    if gender and key:
+        key = f"{key} {gender}"
+    return key or folder_name.upper()
+
+
 def extract_capsule_from_folder(folder_name: str, category: str) -> str:
     """Extrae clave de cápsula del nombre de carpeta del servidor.
     Ej: '01·01 - Q1 2027 MENS TEAM CITY' + 'MENS' → 'TEAM CITY M'
@@ -221,6 +234,33 @@ def find_merchboards_dir(capsule_path: Path) -> Path | None:
     except Exception:
         pass
     return None
+
+
+def find_all_merchboards_in_classic(classic_type_path: Path) -> list[Path]:
+    """Devuelve TODAS las carpetas _MERCHBOARDS dentro de un tipo classic.
+    Cubre el camino directo Y el camino con sub-producto:
+      [tipo]/_MERCHBOARDS                    ← camino 1
+      [tipo]/[sub_producto]/_MERCHBOARDS     ← camino 2
+    """
+    results = []
+    direct = classic_type_path / "_MERCHBOARDS"
+    if direct.is_dir():
+        results.append(direct)
+    try:
+        for d in classic_type_path.iterdir():
+            if not d.is_dir() or "MERCHBOARD" in d.name.upper():
+                continue
+            sub_mb = d / "_MERCHBOARDS"
+            if sub_mb.is_dir():
+                results.append(sub_mb)
+            else:
+                for sd in d.iterdir():
+                    if sd.is_dir() and "MERCHBOARD" in sd.name.upper():
+                        results.append(sd)
+                        break
+    except Exception:
+        pass
+    return results
 
 
 def build_merch_map_from_paths(image_paths: list[Path]) -> tuple[dict, str | None, list[str]]:
@@ -433,7 +473,7 @@ if modo == "🖥️  Desde el servidor":
     if not base_path.exists():
         st.error(f"No se puede acceder a la ruta: `{server_base}`\n\nVerifica que estés conectado a la red de la empresa.")
     else:
-        # Nivel 1: Categoría (multiselect)
+        # ── Categoría (compartida entre Seasonal y Classics) ──
         categories = list_dirs(base_path)
         if categories:
             sel_categories = st.multiselect(
@@ -445,23 +485,9 @@ if modo == "🖥️  Desde el servidor":
             st.warning("No se encontraron carpetas de categoría.")
             sel_categories = []
 
-        # Nivel 2: Año (toma del primer cat que no sea KIDS, o del primer sub-cat de KIDS)
-        sel_year = None
-        if sel_categories:
-            non_kids = [c for c in sel_categories if c.upper() != "KIDS"]
-            if non_kids:
-                year_base = base_path / non_kids[0]
-            else:
-                kids_subs = list_dirs(base_path / "KIDS")
-                year_base = base_path / "KIDS" / kids_subs[0] if kids_subs else None
-            if year_base and year_base.is_dir():
-                years = list_dirs(year_base)
-                if years:
-                    sel_year = st.selectbox("Año", years, key="srv_year")
-
-        # Nivel 2.5: Sub-categoría KIDS (solo si KIDS está seleccionado)
+        # ── Sub-categoría KIDS (compartida) ──
         kids_sub_selection = []
-        if sel_year and any(c.upper() == "KIDS" for c in sel_categories):
+        if sel_categories and any(c.upper() == "KIDS" for c in sel_categories):
             kids_subs = list_dirs(base_path / "KIDS")
             if kids_subs:
                 kids_sub_selection = st.multiselect(
@@ -470,131 +496,287 @@ if modo == "🖥️  Desde el servidor":
                     help="BOYS, GIRLS, KIDS"
                 )
 
-        # Construir fuentes efectivas: label → q_path
-        sources = {}  # {label: quarter_path}
-        if sel_year:
-            for cat in sel_categories:
-                if cat.upper() == "KIDS":
-                    for sub in kids_sub_selection:
-                        q_dir = find_quarter_dir(base_path / cat / sub / sel_year, quarter)
-                        if q_dir:
-                            sources[sub] = q_dir
+        # ── Toggle Seasonal / Classics ──
+        coleccion_mode = st.radio(
+            "Colección", ["📅 Seasonal (Q1-Q4)", "🏛️ Classics"],
+            horizontal=True, key="srv_coleccion_mode",
+        )
+
+        # ════════════════════════════════
+        # SEASONAL
+        # ════════════════════════════════
+        if coleccion_mode == "📅 Seasonal (Q1-Q4)":
+            # Año
+            sel_year = None
+            if sel_categories:
+                non_kids = [c for c in sel_categories if c.upper() != "KIDS"]
+                if non_kids:
+                    year_base = base_path / non_kids[0]
                 else:
-                    q_dir = find_quarter_dir(base_path / cat / sel_year, quarter)
-                    if q_dir:
-                        sources[cat] = q_dir
+                    kids_subs_y = list_dirs(base_path / "KIDS")
+                    year_base = base_path / "KIDS" / kids_subs_y[0] if kids_subs_y else None
+                if year_base and year_base.is_dir():
+                    years = list_dirs(year_base)
+                    if years:
+                        sel_year = st.selectbox("Año", years, key="srv_year")
 
-        # Nivel 3: Cápsulas (multiselect — agrega carpetas de todas las fuentes)
-        sel_capsule_folders = []
-        capsule_folders_by_cat = {}  # label → {"q_path": Path, "folders": [...]}
+            # Fuentes: label → quarter_path
+            sources = {}
+            if sel_year:
+                for cat in sel_categories:
+                    if cat.upper() == "KIDS":
+                        for sub in kids_sub_selection:
+                            q_dir = find_quarter_dir(base_path / cat / sub / sel_year, quarter)
+                            if q_dir:
+                                sources[sub] = q_dir
+                    else:
+                        q_dir = find_quarter_dir(base_path / cat / sel_year, quarter)
+                        if q_dir:
+                            sources[cat] = q_dir
 
-        if sources:
-            for label, q_path in sources.items():
-                folders = list_dirs(q_path)
-                if folders:
-                    capsule_folders_by_cat[label] = {"q_path": q_path, "folders": folders}
+            # Cápsulas
+            sel_capsule_folders = []
+            capsule_folders_by_cat = {}
 
-            all_capsule_folders = sorted({
-                f for info in capsule_folders_by_cat.values() for f in info["folders"]
-            })
+            if sources:
+                for label, q_path in sources.items():
+                    folders = list_dirs(q_path)
+                    if folders:
+                        capsule_folders_by_cat[label] = {"q_path": q_path, "folders": folders}
 
-            if all_capsule_folders:
-                sel_capsule_folders = st.multiselect(
-                    "Cápsula(s) (puedes seleccionar varias)", all_capsule_folders,
-                    default=[], key="srv_capsule",
-                    help="Selecciona las cápsulas que quieres incluir en el deck"
-                )
-            else:
-                st.warning(f"No hay carpetas de cápsula para {quarter} en las categorías seleccionadas.")
+                all_capsule_folders = sorted({
+                    f for info in capsule_folders_by_cat.values() for f in info["folders"]
+                })
 
-        # Nivel 4: Liga y Equipo
-        sel_league = None
-        sel_team   = None
+                if all_capsule_folders:
+                    sel_capsule_folders = st.multiselect(
+                        "Cápsula(s) (puedes seleccionar varias)", all_capsule_folders,
+                        default=[], key="srv_capsule",
+                        help="Selecciona las cápsulas que quieres incluir en el deck"
+                    )
+                else:
+                    st.warning(f"No hay carpetas de cápsula para {quarter} en las categorías seleccionadas.")
 
-        if sel_capsule_folders:
-            leagues_set = set()
-            for cap in sel_capsule_folders:
-                for label, info in capsule_folders_by_cat.items():
-                    if cap in info["folders"]:
-                        mb = find_merchboards_dir(info["q_path"] / cap)
-                        if mb:
-                            for d in list_dirs(mb):
-                                leagues_set.add(d)
-            leagues = sorted(leagues_set)
+            # Liga y Equipo
+            sel_league = None
+            sel_team   = None
 
-            if leagues:
-                sel_league = st.selectbox("Liga", leagues, key="srv_league")
-            else:
-                st.warning("No se encontró carpeta _MERCHBOARDS en las cápsulas seleccionadas.")
-
-            if sel_league:
-                teams_set = set()
+            if sel_capsule_folders:
+                leagues_set = set()
                 for cap in sel_capsule_folders:
                     for label, info in capsule_folders_by_cat.items():
                         if cap in info["folders"]:
                             mb = find_merchboards_dir(info["q_path"] / cap)
                             if mb:
-                                league_path = mb / sel_league
-                                if league_path.is_dir():
-                                    for t in list_dirs(league_path):
-                                        teams_set.add(t)
-                teams = sorted(teams_set)
+                                for d in list_dirs(mb):
+                                    leagues_set.add(d)
+                leagues = sorted(leagues_set)
 
-                if teams:
-                    sel_team = st.selectbox("Equipo", teams, key="srv_team")
+                if leagues:
+                    sel_league = st.selectbox("Liga", leagues, key="srv_league")
                 else:
-                    st.warning(f"No hay equipos en {sel_league}.")
+                    st.warning("No se encontró carpeta _MERCHBOARDS en las cápsulas seleccionadas.")
 
-        # Nivel 5: Cargar imágenes
-        if sel_team and sel_league:
-            loaded_routes = []
+                if sel_league:
+                    teams_set = set()
+                    for cap in sel_capsule_folders:
+                        for label, info in capsule_folders_by_cat.items():
+                            if cap in info["folders"]:
+                                mb = find_merchboards_dir(info["q_path"] / cap)
+                                if mb:
+                                    league_path = mb / sel_league
+                                    if league_path.is_dir():
+                                        for t in list_dirs(league_path):
+                                            teams_set.add(t)
+                    teams = sorted(teams_set)
 
-            for cap_folder in sel_capsule_folders:
-                for label, info in capsule_folders_by_cat.items():
-                    if cap_folder not in info["folders"]:
-                        continue
-                    mb = find_merchboards_dir(info["q_path"] / cap_folder)
-                    if not mb:
-                        continue
-                    team_path = mb / sel_league / sel_team
-                    images    = list_images(team_path)
-                    if not images:
-                        continue
-                    cap_key = extract_capsule_from_folder(cap_folder, label)
-                    loaded_routes.append(f"{label} / {cap_folder}")
-                    for img in images:
-                        merch_map.setdefault(cap_key, []).append({
-                            "name":  img.name,
-                            "bytes": img.read_bytes(),
-                        })
-                    detected_team = sel_team
+                    if teams:
+                        sel_team = st.selectbox("Equipo", teams, key="srv_team")
+                    else:
+                        st.warning(f"No hay equipos en {sel_league}.")
 
-            for k in merch_map:
-                merch_map[k].sort(key=lambda x: x["name"])
+            # Cargar imágenes (Seasonal)
+            if sel_team and sel_league:
+                loaded_routes = []
 
-            if detected_team:
-                st.markdown(
-                    f'<div class="team-badge">'
-                    f'<span style="color:#888;font-size:0.7rem;letter-spacing:1px;">EQUIPO · </span>'
-                    f'<span style="color:#e8c84a;font-family:\'Bebas Neue\',sans-serif;letter-spacing:1px;">'
-                    f'{sel_team}</span></div>',
-                    unsafe_allow_html=True,
-                )
-                if loaded_routes:
-                    st.caption("Rutas cargadas: " + ", ".join(loaded_routes))
-                st.write("")
+                for cap_folder in sel_capsule_folders:
+                    for label, info in capsule_folders_by_cat.items():
+                        if cap_folder not in info["folders"]:
+                            continue
+                        mb = find_merchboards_dir(info["q_path"] / cap_folder)
+                        if not mb:
+                            continue
+                        team_path = mb / sel_league / sel_team
+                        images    = list_images(team_path)
+                        if not images:
+                            continue
+                        cap_key = extract_capsule_from_folder(cap_folder, label)
+                        loaded_routes.append(f"{label} / {cap_folder}")
+                        for img in images:
+                            merch_map.setdefault(cap_key, []).append({
+                                "name":  img.name,
+                                "bytes": img.read_bytes(),
+                            })
+                        detected_team = sel_team
 
-            if merch_map:
-                cols = st.columns(min(4, len(merch_map)))
-                for i, (k, v) in enumerate(merch_map.items()):
-                    with cols[i % len(cols)]:
-                        st.markdown(
-                            f'<div class="capsule-card match"><h4>{k}</h4>'
-                            f'<p>{len(v)} imagen(es)</p></div>',
-                            unsafe_allow_html=True,
-                        )
-            elif sel_team:
-                st.warning(f"No se encontraron imágenes para {sel_team} en las cápsulas seleccionadas.")
+                for k in merch_map:
+                    merch_map[k].sort(key=lambda x: x["name"])
+
+                if detected_team:
+                    st.markdown(
+                        f'<div class="team-badge">'
+                        f'<span style="color:#888;font-size:0.7rem;letter-spacing:1px;">EQUIPO · </span>'
+                        f'<span style="color:#e8c84a;font-family:\'Bebas Neue\',sans-serif;letter-spacing:1px;">'
+                        f'{sel_team}</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    if loaded_routes:
+                        st.caption("Rutas cargadas: " + ", ".join(loaded_routes))
+                    st.write("")
+
+                if merch_map:
+                    cols = st.columns(min(4, len(merch_map)))
+                    for i, (k, v) in enumerate(merch_map.items()):
+                        with cols[i % len(cols)]:
+                            st.markdown(
+                                f'<div class="capsule-card match"><h4>{k}</h4>'
+                                f'<p>{len(v)} imagen(es)</p></div>',
+                                unsafe_allow_html=True,
+                            )
+                elif sel_team:
+                    st.warning(f"No se encontraron imágenes para {sel_team} en las cápsulas seleccionadas.")
+
+        # ════════════════════════════════
+        # CLASSICS
+        # ════════════════════════════════
+        else:
+            # Rutas _CLASSIC por categoría
+            classic_sources = {}  # label → Path(_CLASSIC folder)
+            if sel_categories:
+                for cat in sel_categories:
+                    if cat.upper() == "KIDS":
+                        for sub in kids_sub_selection:
+                            classic_dir = base_path / cat / sub / "_CLASSIC"
+                            if classic_dir.is_dir():
+                                classic_sources[sub] = classic_dir
+                    else:
+                        classic_dir = base_path / cat / "_CLASSIC"
+                        if classic_dir.is_dir():
+                            classic_sources[cat] = classic_dir
+
+            if not classic_sources and sel_categories:
+                st.warning("No se encontró carpeta _CLASSIC en las categorías seleccionadas.")
+
+            # Tipo Classic (multiselect)
+            sel_classic_types = []
+            classic_types_by_src = {}  # label → list of folder names
+
+            if classic_sources:
+                for label, src_path in classic_sources.items():
+                    folders = list_dirs(src_path)
+                    if folders:
+                        classic_types_by_src[label] = folders
+
+                all_classic_types = sorted({
+                    f for folders in classic_types_by_src.values() for f in folders
+                })
+
+                if all_classic_types:
+                    sel_classic_types = st.multiselect(
+                        "Tipo Classic (puedes seleccionar varios)", all_classic_types,
+                        default=[], key="srv_classic_type",
+                        help="Selecciona los tipos de Classics a incluir"
+                    )
+                else:
+                    st.warning("No hay sub-carpetas en _CLASSIC.")
+
+            # Liga y Equipo
+            sel_league = None
+            sel_team   = None
+
+            if sel_classic_types:
+                leagues_set = set()
+                for ct in sel_classic_types:
+                    for label, src_path in classic_sources.items():
+                        ct_path = src_path / ct
+                        if ct_path.is_dir():
+                            for mb in find_all_merchboards_in_classic(ct_path):
+                                for d in list_dirs(mb):
+                                    leagues_set.add(d)
+                leagues = sorted(leagues_set)
+
+                if leagues:
+                    sel_league = st.selectbox("Liga", leagues, key="srv_league")
+                else:
+                    st.warning("No se encontró _MERCHBOARDS en los tipos Classic seleccionados.")
+
+                if sel_league:
+                    teams_set = set()
+                    for ct in sel_classic_types:
+                        for label, src_path in classic_sources.items():
+                            ct_path = src_path / ct
+                            if ct_path.is_dir():
+                                for mb in find_all_merchboards_in_classic(ct_path):
+                                    league_path = mb / sel_league
+                                    if league_path.is_dir():
+                                        for t in list_dirs(league_path):
+                                            teams_set.add(t)
+                    teams = sorted(teams_set)
+
+                    if teams:
+                        sel_team = st.selectbox("Equipo", teams, key="srv_team")
+                    else:
+                        st.warning(f"No hay equipos en {sel_league}.")
+
+            # Cargar imágenes (Classics)
+            if sel_team and sel_league:
+                loaded_routes = []
+
+                for ct_folder in sel_classic_types:
+                    for label, src_path in classic_sources.items():
+                        ct_path = src_path / ct_folder
+                        if not ct_path.is_dir():
+                            continue
+                        for mb in find_all_merchboards_in_classic(ct_path):
+                            team_path = mb / sel_league / sel_team
+                            images    = list_images(team_path)
+                            if not images:
+                                continue
+                            cap_key = extract_capsule_from_classic(ct_folder, label)
+                            loaded_routes.append(f"{label} / _CLASSIC / {ct_folder}")
+                            for img in images:
+                                merch_map.setdefault(cap_key, []).append({
+                                    "name":  img.name,
+                                    "bytes": img.read_bytes(),
+                                })
+                        detected_team = sel_team
+
+                for k in merch_map:
+                    merch_map[k].sort(key=lambda x: x["name"])
+
+                if detected_team:
+                    st.markdown(
+                        f'<div class="team-badge">'
+                        f'<span style="color:#888;font-size:0.7rem;letter-spacing:1px;">EQUIPO · </span>'
+                        f'<span style="color:#e8c84a;font-family:\'Bebas Neue\',sans-serif;letter-spacing:1px;">'
+                        f'{sel_team}</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    if loaded_routes:
+                        st.caption("Rutas cargadas: " + ", ".join(loaded_routes))
+                    st.write("")
+
+                if merch_map:
+                    cols = st.columns(min(4, len(merch_map)))
+                    for i, (k, v) in enumerate(merch_map.items()):
+                        with cols[i % len(cols)]:
+                            st.markdown(
+                                f'<div class="capsule-card match"><h4>{k}</h4>'
+                                f'<p>{len(v)} imagen(es)</p></div>',
+                                unsafe_allow_html=True,
+                            )
+                elif sel_team:
+                    st.warning(f"No se encontraron imágenes para {sel_team} en los Classics seleccionados.")
 
 # ── MODO MANUAL ───────────────────────────────────────────────
 else:

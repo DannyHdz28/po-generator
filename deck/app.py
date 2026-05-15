@@ -849,15 +849,21 @@ else:
     if st.button("Generar Deck →", type="primary"):
         with st.spinner("Procesando slides..."):
             out, replaced, log = generate_deck(ppt_bytes, merch_map)
+        base_name = re.sub(r"\.pptx$", "", ppt_file.name, flags=re.IGNORECASE)
+        st.session_state["deck_out"]      = out.getvalue()
+        st.session_state["deck_replaced"] = replaced
+        st.session_state["deck_log"]      = log
+        st.session_state["deck_name"]     = f"{base_name} — {detected_team or 'EQUIPO'}.pptx"
 
+    if "deck_out" in st.session_state:
         st.markdown(
-            f'<span class="pill-ok">✓ {replaced} SLIDE(S) ACTUALIZADAS</span>',
+            f'<span class="pill-ok">✓ {st.session_state["deck_replaced"]} SLIDE(S) ACTUALIZADAS</span>',
             unsafe_allow_html=True,
         )
         st.write("")
 
         with st.expander("Detalle", expanded=True):
-            for lvl, msg in log:
+            for lvl, msg in st.session_state["deck_log"]:
                 icon  = {"ok": "✓", "warn": "⚠", "err": "✗"}.get(lvl, "·")
                 color = {"ok": "#4ade80", "warn": "#e8c84a", "err": "#f87171"}.get(lvl, "#888")
                 st.markdown(
@@ -865,12 +871,10 @@ else:
                     unsafe_allow_html=True,
                 )
 
-        base_name = re.sub(r"\.pptx$", "", ppt_file.name, flags=re.IGNORECASE)
-        out_name  = f"{base_name} — {detected_team or 'EQUIPO'}.pptx"
         st.download_button(
             "⬇ Descargar PPT",
-            data=out,
-            file_name=out_name,
+            data=st.session_state["deck_out"],
+            file_name=st.session_state["deck_name"],
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             type="primary",
         )

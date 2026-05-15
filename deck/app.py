@@ -467,23 +467,25 @@ if ppt_file:
     try:
         slides_found, missing_gender, unknown_capsule = scan_pptx(ppt_bytes, known_capsules)
         if slides_found:
-            st.markdown(f'<span class="pill-ok">✓ {len(slides_found)} SLIDE(S) MARCADAS</span>', unsafe_allow_html=True)
-            for s in slides_found:
-                st.caption(f"Slide {s['slide']} → {s['capsule']} · género: {s['gender'] or '—'}")
+            badges = []
+            badges.append(f'<span class="pill-ok">✓ {len(slides_found)} SLIDE(S) MARCADAS</span>')
+            if missing_gender:
+                badges.append(f'<span class="pill-warn">⚠ {len(missing_gender)} SIN GÉNERO</span>')
+            if unknown_capsule:
+                badges.append(f'<span class="pill-warn">⚠ {len(unknown_capsule)} CÁPSULA DESCONOCIDA</span>')
+            st.markdown(" &nbsp; ".join(badges), unsafe_allow_html=True)
+
+            with st.expander(f"Ver detalle ({len(slides_found)} slides)", expanded=False):
+                for s in slides_found:
+                    gender_badge = f" · {s['gender']}" if s["gender"] else " · <span style='color:#f87171'>sin género</span>"
+                    st.markdown(
+                        f'<div style="font-size:0.78rem;color:#aaa;padding:1px 0;">'
+                        f'Slide {s["slide"]} &nbsp;→&nbsp; <span style="color:#f5f5f0">{s["capsule"]}</span>{gender_badge}</div>',
+                        unsafe_allow_html=True,
+                    )
         else:
             st.markdown('<span class="pill-warn">⚠ SIN NOTAS DE CÁPSULA</span>', unsafe_allow_html=True)
             st.caption("Verifica que las slides de merchboard tengan notas tipo `FLAGSHIP M`.")
-
-        if missing_gender:
-            st.warning(
-                f"⚠ {len(missing_gender)} slide(s) sin género (M/W/K) en la nota:\n\n"
-                + "\n".join(f"- Slide {m['slide']} → `{m['capsule']}`" for m in missing_gender)
-            )
-        if unknown_capsule:
-            st.warning(
-                f"⚠ {len(unknown_capsule)} slide(s) con cápsulas no listadas en {quarter}:\n\n"
-                + "\n".join(f"- Slide {u['slide']} → `{u['capsule']}`" for u in unknown_capsule)
-            )
     except Exception as e:
         st.error(f"Error leyendo el PPT: {e}")
 
@@ -841,13 +843,19 @@ else:
             "Imágenes disponibles": len(merch_map.get(match, [])) if match else 0,
         })
 
-    if mapping_preview:
-        st.caption("Mapping propuesto:")
-        st.dataframe(mapping_preview, hide_index=True, use_container_width=True)
-
     no_match = sum(1 for r in mapping_preview if r["Cápsula matcheada"] == "⚠ sin match")
+    matched  = len(mapping_preview) - no_match
+
+    _map_badges = [f'<span class="pill-ok">{matched} CON IMAGEN</span>']
     if no_match:
-        st.warning(f"⚠ {no_match} slide(s) no tienen imágenes que coincidan. Se generará el deck pero esas slides quedarán sin cambios.")
+        _map_badges.append(f'<span class="pill-warn">{no_match} SIN MATCH</span>')
+    if mapping_preview:
+        st.markdown(" &nbsp; ".join(_map_badges), unsafe_allow_html=True)
+        with st.expander("Ver mapping de slides", expanded=False):
+            st.dataframe(mapping_preview, hide_index=True, use_container_width=True)
+
+    if no_match:
+        st.warning(f"⚠ {no_match} slide(s) sin imágenes coincidentes — quedarán sin cambios.")
 
     if st.button("Generar Deck →", type="primary"):
         with st.spinner("Procesando slides..."):
@@ -859,14 +867,20 @@ else:
         st.session_state["deck_name"]     = f"{base_name} — {detected_team or 'EQUIPO'}.pptx"
 
     if "deck_out" in st.session_state:
-        st.markdown(
-            f'<span class="pill-ok">✓ {st.session_state["deck_replaced"]} SLIDE(S) ACTUALIZADAS</span>',
-            unsafe_allow_html=True,
-        )
+        _log   = st.session_state["deck_log"]
+        _warns = sum(1 for lvl, _ in _log if lvl == "warn")
+        _errs  = sum(1 for lvl, _ in _log if lvl == "err")
+
+        _badges = [f'<span class="pill-ok">✓ {st.session_state["deck_replaced"]} ACTUALIZADAS</span>']
+        if _warns:
+            _badges.append(f'<span class="pill-warn">⚠ {_warns} ADVERTENCIA(S)</span>')
+        if _errs:
+            _badges.append(f'<span class="pill-warn">✗ {_errs} ERROR(ES)</span>')
+        st.markdown(" &nbsp; ".join(_badges), unsafe_allow_html=True)
         st.write("")
 
-        with st.expander("Detalle", expanded=True):
-            for lvl, msg in st.session_state["deck_log"]:
+        with st.expander("Ver detalle del proceso", expanded=False):
+            for lvl, msg in _log:
                 icon  = {"ok": "✓", "warn": "⚠", "err": "✗"}.get(lvl, "·")
                 color = {"ok": "#4ade80", "warn": "#e8c84a", "err": "#f87171"}.get(lvl, "#888")
                 st.markdown(

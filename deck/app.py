@@ -369,6 +369,37 @@ def replace_picture_blob(shape, new_blob: bytes) -> bool:
     return True
 
 
+def generate_blank_deck(entries: list[dict]) -> tuple[io.BytesIO, int]:
+    """Crea un PPT nuevo (16:9) con una slide en blanco por imagen.
+    entries pre-ordenado por (liga, equipo, capsula, name).
+    Cada entry: {"path": Path, "name": str}
+    """
+    prs = Presentation()
+    prs.slide_width  = Emu(12192000)
+    prs.slide_height = Emu(6858000)
+    blank_layout = prs.slide_layouts[6]
+    added = 0
+    for entry in entries:
+        try:
+            img_bytes = entry["path"].read_bytes()
+        except Exception:
+            continue
+        slide = prs.slides.add_slide(blank_layout)
+        try:
+            slide.shapes.add_picture(
+                io.BytesIO(img_bytes),
+                left=INSERT_LEFT, top=INSERT_TOP,
+                width=INSERT_WIDTH, height=INSERT_HEIGHT,
+            )
+            added += 1
+        except Exception:
+            pass
+    out = io.BytesIO()
+    prs.save(out)
+    out.seek(0)
+    return out, added
+
+
 def generate_deck(ppt_bytes: bytes, merch_map: dict):
     prs      = Presentation(io.BytesIO(ppt_bytes))
     used     = defaultdict(int)
@@ -455,12 +486,23 @@ with st.sidebar:
         help="Ruta UNC al servidor, ej: \\\\10.0.1.30\\Sales Toolkits\\...",
     )
 
-# ─── STEP 1: PPT BASE ─────────────────────────────────────────
-st.markdown('<div class="section-h">1 · PPT BASE</div>', unsafe_allow_html=True)
-ppt_file = st.file_uploader("Sube tu PPT base (.pptx)", type=["pptx"], key="ppt")
+# ─── MODO DE TRABAJO ─────────────────────────────────────────
+ppt_mode = st.radio(
+    "Modo de trabajo",
+    ["📄  PPT existente", "✨  PPT nuevo"],
+    horizontal=True,
+    help="Existente: reemplaza imágenes en un PPT con notas. Nuevo: genera un PPT desde cero con las imágenes encontradas."
+)
+mode_new = ppt_mode.startswith("✨")
 
+# ─── STEP 1: PPT BASE ─────────────────────────────────────────
 ppt_bytes    = None
 slides_found = []
+ppt_file     = None
+
+if not mode_new:
+    st.markdown('<div class="section-h">1 · PPT BASE</div>', unsafe_allow_html=True)
+    ppt_file = st.file_uploader("Sube tu PPT base (.pptx)", type=["pptx"], key="ppt")
 
 if ppt_file:
     ppt_bytes = ppt_file.getvalue()
@@ -492,13 +534,18 @@ if ppt_file:
 # ─── STEP 2: MERCHBOARDS ──────────────────────────────────────
 st.markdown('<div class="section-h">2 · MERCHBOARDS</div>', unsafe_allow_html=True)
 
-modo = st.radio(
-    "Origen de las imágenes",
-    ["🖥️  Desde el servidor", "📁  Subir manualmente"],
-    horizontal=True,
-)
+if mode_new:
+    modo = "🖥️  Desde el servidor"
+    st.caption("Modo PPT nuevo: imágenes se buscan en el servidor.")
+else:
+    modo = st.radio(
+        "Origen de las imágenes",
+        ["🖥️  Desde el servidor", "📁  Subir manualmente"],
+        horizontal=True,
+    )
 
 merch_map     = {}
+entries_new   = []  # modo PPT nuevo: [{"liga","equipo","capsule","path","name"}, ...]
 detected_team = None
 unmatched_names = []
 
@@ -645,8 +692,10 @@ if modo == "🖥️  Desde el servidor":
                 classic_sub_selections[ct] = []
 
         # ── Liga y Equipo (compartidos — seasonal + classics) ──
-        sel_league = None
-        sel_team   = None
+        sel_league   = None
+        sel_team     = None
+        sel_leagues  = []
+        sel_teams    = []
 
         if sel_capsule_folders or sel_classic_types:
             leagues_set = set()
@@ -670,11 +719,16 @@ if modo == "🖥️  Desde el servidor":
 
             leagues = sorted(leagues_set)
             if leagues:
-                sel_league = st.selectbox("Liga", leagues, key="srv_league")
+                if mode_new:
+                    sel_leagues = st.multiselect("Ligas", leagues, default=[], key="srv_leagues")
+                else:
+                    sel_league = st.selectbox("Liga", leagues, key="srv_league")
             else:
                 st.warning("No se encontró _MERCHBOARDS en la selección.")
 
-            if sel_league:
+            active_leagues = sel_leagues if mode_new else ([sel_league] if sel_league else [])
+
+            if active_leagues:
                 teams_set = set()
 
                 for cap in sel_capsule_folders:
@@ -682,10 +736,11 @@ if modo == "🖥️  Desde el servidor":
                         if cap in info["folders"]:
                             mb = find_merchboards_dir(info["q_path"] / cap)
                             if mb:
-                                league_path = mb / sel_league
-                                if league_path.is_dir():
-                                    for t in list_dirs(league_path):
-                                        teams_set.add(t)
+                                for lg in active_leagues:
+                                    league_path = mb / lg
+                                    if league_path.is_dir():
+                                        for t in list_dirs(league_path):
+                                            teams_set.add(t)
 
                 for ct in sel_classic_types:
                     sub_filter = tuple(classic_sub_selections.get(ct) or []) or None
@@ -693,19 +748,81 @@ if modo == "🖥️  Desde el servidor":
                         ct_path = src_path / ct
                         if ct_path.is_dir():
                             for mb in find_all_merchboards_in_classic(ct_path, sub_filter):
-                                league_path = mb / sel_league
-                                if league_path.is_dir():
-                                    for t in list_dirs(league_path):
-                                        teams_set.add(t)
+                                for lg in active_leagues:
+                                    league_path = mb / lg
+                                    if league_path.is_dir():
+                                        for t in list_dirs(league_path):
+                                            teams_set.add(t)
 
                 teams = sorted(teams_set)
                 if teams:
-                    sel_team = st.selectbox("Equipo", teams, key="srv_team")
+                    if mode_new:
+                        sel_teams = st.multiselect("Equipos", teams, default=[], key="srv_teams")
+                    else:
+                        sel_team = st.selectbox("Equipo", teams, key="srv_team")
                 else:
-                    st.warning(f"No hay equipos en {sel_league}.")
+                    st.warning(f"No hay equipos en {', '.join(active_leagues)}.")
 
-        # ── Cargar imágenes (seasonal + classics → un solo merch_map) ──
-        if sel_team and sel_league:
+        # ── Cargar imágenes ──
+        active_teams = sel_teams if mode_new else ([sel_team] if sel_team else [])
+        active_leagues_load = sel_leagues if mode_new else ([sel_league] if sel_league else [])
+
+        if mode_new and active_teams and active_leagues_load:
+            for cap_folder in sel_capsule_folders:
+                for label, info in capsule_folders_by_cat.items():
+                    if cap_folder not in info["folders"]:
+                        continue
+                    mb = find_merchboards_dir(info["q_path"] / cap_folder)
+                    if not mb:
+                        continue
+                    cap_key = extract_capsule_from_folder(cap_folder, label)
+                    for lg in active_leagues_load:
+                        for tm in active_teams:
+                            team_path = mb / lg / tm
+                            for img in list_images(team_path):
+                                entries_new.append({
+                                    "liga": lg, "equipo": tm, "capsule": cap_key,
+                                    "path": img, "name": img.name,
+                                })
+            for ct_folder in sel_classic_types:
+                sub_filter = tuple(classic_sub_selections.get(ct_folder) or []) or None
+                for label, src_path in classic_sources.items():
+                    ct_path = src_path / ct_folder
+                    if not ct_path.is_dir():
+                        continue
+                    cap_key = extract_capsule_from_classic(ct_folder, label)
+                    for mb in find_all_merchboards_in_classic(ct_path, sub_filter):
+                        for lg in active_leagues_load:
+                            for tm in active_teams:
+                                team_path = mb / lg / tm
+                                for img in list_images(team_path):
+                                    entries_new.append({
+                                        "liga": lg, "equipo": tm, "capsule": cap_key,
+                                        "path": img, "name": img.name,
+                                    })
+            entries_new.sort(key=lambda e: (e["liga"], e["equipo"], e["capsule"], e["name"]))
+
+            if entries_new:
+                by_team = defaultdict(int)
+                for e in entries_new:
+                    by_team[(e["liga"], e["equipo"])] += 1
+                st.markdown(
+                    f'<span class="pill-ok">✓ {len(entries_new)} IMAGEN(ES) · '
+                    f'{len(by_team)} EQUIPO(S) · {len(active_leagues_load)} LIGA(S)</span>',
+                    unsafe_allow_html=True,
+                )
+                with st.expander("Ver resumen por equipo", expanded=False):
+                    for (lg, tm), n in sorted(by_team.items()):
+                        st.markdown(
+                            f'<div style="font-size:0.8rem;color:#aaa;">'
+                            f'<span style="color:#e8c84a">{lg}</span> · '
+                            f'<span style="color:#f5f5f0">{tm}</span> · {n} img</div>',
+                            unsafe_allow_html=True,
+                        )
+            else:
+                st.warning("No se encontraron imágenes para la selección.")
+
+        elif not mode_new and sel_team and sel_league:
             loaded_routes = []
 
             # Seasonal
@@ -826,7 +943,33 @@ else:
 # ─── STEP 3: GENERAR DECK ─────────────────────────────────────
 st.markdown('<div class="section-h">3 · GENERAR DECK</div>', unsafe_allow_html=True)
 
-if not ppt_bytes:
+if mode_new:
+    if not entries_new:
+        st.caption("Selecciona cápsulas, ligas y equipos en el paso 2.")
+    else:
+        if st.button("Generar PPT nuevo →", type="primary", key="gen_new"):
+            with st.spinner(f"Creando PPT con {len(entries_new)} slide(s)..."):
+                out, added = generate_blank_deck(entries_new)
+            st.session_state["new_deck_out"]   = out.getvalue()
+            st.session_state["new_deck_count"] = added
+            st.session_state["new_deck_name"]  = "deck_nuevo.pptx"
+
+        if "new_deck_out" in st.session_state:
+            st.markdown(
+                f'<span class="pill-ok">✓ {st.session_state["new_deck_count"]} SLIDE(S) CREADAS</span>',
+                unsafe_allow_html=True,
+            )
+            st.write("")
+            st.download_button(
+                "⬇ Descargar PPT",
+                data=st.session_state["new_deck_out"],
+                file_name=st.session_state["new_deck_name"],
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                type="primary",
+                key="dl_new",
+            )
+
+elif not ppt_bytes:
     st.caption("Sube el PPT base en el paso 1.")
 elif not merch_map:
     st.caption("Selecciona o sube los merchboards en el paso 2.")

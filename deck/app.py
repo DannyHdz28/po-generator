@@ -506,7 +506,7 @@ if modo == "🖥️  Desde el servidor":
                 kids_subs_y = list_dirs(base_path / "KIDS")
                 year_base = base_path / "KIDS" / kids_subs_y[0] if kids_subs_y else None
             if year_base and year_base.is_dir():
-                years = list_dirs(year_base)
+                years = [d for d in list_dirs(year_base) if not d.startswith("_")]
                 if years:
                     sel_year = st.selectbox("Año", years, key="srv_year")
 

@@ -236,19 +236,30 @@ def find_merchboards_dir(capsule_path: Path) -> Path | None:
     return None
 
 
-def find_all_merchboards_in_classic(classic_type_path: Path) -> list[Path]:
-    """Devuelve TODAS las carpetas _MERCHBOARDS dentro de un tipo classic.
+CLASSIC_DIRECT_KEY = "_DIRECTO"
+
+
+def find_all_merchboards_in_classic(
+    classic_type_path: Path,
+    sub_filter: list[str] | None = None,
+) -> list[Path]:
+    """Devuelve carpetas _MERCHBOARDS dentro de un tipo classic.
     Cubre el camino directo Y el camino con sub-producto:
       [tipo]/_MERCHBOARDS                    ← camino 1
       [tipo]/[sub_producto]/_MERCHBOARDS     ← camino 2
+    Si sub_filter es None → devuelve todo.
+    Si trae lista → solo incluye '_DIRECTO' y/o nombres de sub-producto que estén.
     """
     results = []
-    direct = classic_type_path / "_MERCHBOARDS"
-    if direct.is_dir():
-        results.append(direct)
+    if sub_filter is None or CLASSIC_DIRECT_KEY in sub_filter:
+        direct = classic_type_path / "_MERCHBOARDS"
+        if direct.is_dir():
+            results.append(direct)
     try:
         for d in classic_type_path.iterdir():
             if not d.is_dir() or "MERCHBOARD" in d.name.upper():
+                continue
+            if sub_filter is not None and d.name not in sub_filter:
                 continue
             sub_mb = d / "_MERCHBOARDS"
             if sub_mb.is_dir():
@@ -261,6 +272,26 @@ def find_all_merchboards_in_classic(classic_type_path: Path) -> list[Path]:
     except Exception:
         pass
     return results
+
+
+def list_classic_sub_options(classic_type_path: Path) -> tuple[bool, list[str]]:
+    """Devuelve (tiene_merchboards_directo, [nombres_sub_producto])."""
+    has_direct = (classic_type_path / "_MERCHBOARDS").is_dir()
+    subs = []
+    try:
+        for d in classic_type_path.iterdir():
+            if not d.is_dir() or "MERCHBOARD" in d.name.upper():
+                continue
+            if (d / "_MERCHBOARDS").is_dir():
+                subs.append(d.name)
+            else:
+                for sd in d.iterdir():
+                    if sd.is_dir() and "MERCHBOARD" in sd.name.upper():
+                        subs.append(d.name)
+                        break
+    except Exception:
+        pass
+    return has_direct, sorted(subs)
 
 
 def build_merch_map_from_paths(image_paths: list[Path]) -> tuple[dict, str | None, list[str]]:
@@ -578,6 +609,36 @@ if modo == "🖥️  Desde el servidor":
                     help="Selecciona los tipos de Classics a incluir en el mismo PPT"
                 )
 
+        # ── Sub-productos por classic (opcional) ──
+        classic_sub_selections = {}  # ct_folder → list[str] (_DIRECTO + nombres sub)
+        for ct in sel_classic_types:
+            combined_subs = set()
+            has_any_direct = False
+            for label, src_path in classic_sources.items():
+                ct_path = src_path / ct
+                if not ct_path.is_dir():
+                    continue
+                has_direct, subs = list_classic_sub_options(ct_path)
+                if has_direct:
+                    has_any_direct = True
+                combined_subs.update(subs)
+
+            options = []
+            if has_any_direct:
+                options.append(CLASSIC_DIRECT_KEY)
+            options.extend(sorted(combined_subs))
+
+            if options:
+                classic_sub_selections[ct] = st.multiselect(
+                    f"   └─ Sub-productos de {ct}",
+                    options,
+                    default=options,
+                    key=f"srv_classic_sub_{ct}",
+                    help="Deja todo seleccionado para incluir ambos caminos",
+                )
+            else:
+                classic_sub_selections[ct] = []
+
         # ── Liga y Equipo (compartidos — seasonal + classics) ──
         sel_league = None
         sel_team   = None
@@ -594,10 +655,11 @@ if modo == "🖥️  Desde el servidor":
                                 leagues_set.add(d)
 
             for ct in sel_classic_types:
+                sub_filter = classic_sub_selections.get(ct) or None
                 for label, src_path in classic_sources.items():
                     ct_path = src_path / ct
                     if ct_path.is_dir():
-                        for mb in find_all_merchboards_in_classic(ct_path):
+                        for mb in find_all_merchboards_in_classic(ct_path, sub_filter):
                             for d in list_dirs(mb):
                                 leagues_set.add(d)
 
@@ -621,10 +683,11 @@ if modo == "🖥️  Desde el servidor":
                                         teams_set.add(t)
 
                 for ct in sel_classic_types:
+                    sub_filter = classic_sub_selections.get(ct) or None
                     for label, src_path in classic_sources.items():
                         ct_path = src_path / ct
                         if ct_path.is_dir():
-                            for mb in find_all_merchboards_in_classic(ct_path):
+                            for mb in find_all_merchboards_in_classic(ct_path, sub_filter):
                                 league_path = mb / sel_league
                                 if league_path.is_dir():
                                     for t in list_dirs(league_path):
@@ -663,11 +726,12 @@ if modo == "🖥️  Desde el servidor":
 
             # Classics
             for ct_folder in sel_classic_types:
+                sub_filter = classic_sub_selections.get(ct_folder) or None
                 for label, src_path in classic_sources.items():
                     ct_path = src_path / ct_folder
                     if not ct_path.is_dir():
                         continue
-                    for mb in find_all_merchboards_in_classic(ct_path):
+                    for mb in find_all_merchboards_in_classic(ct_path, sub_filter):
                         team_path = mb / sel_league / sel_team
                         images    = list_images(team_path)
                         if not images:

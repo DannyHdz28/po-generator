@@ -184,6 +184,7 @@ def find_note_match(notes_text: str, merch_map: dict):
 
 
 # ─── SERVER HELPERS ───────────────────────────────────────────
+@st.cache_data(ttl=600, show_spinner=False)
 def find_quarter_dir(year_path: Path, quarter: str) -> Path | None:
     """Encuentra la carpeta del cuarto, maneja 'Q1' y 'Q1 2027'."""
     direct = year_path / quarter
@@ -198,18 +199,16 @@ def find_quarter_dir(year_path: Path, quarter: str) -> Path | None:
     return None
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def list_dirs(path: Path) -> list[str]:
     """Lista nombres de subcarpetas ordenados."""
     try:
         return sorted([d.name for d in path.iterdir() if d.is_dir()])
-    except PermissionError:
-        st.error(f"Sin permisos para leer: {path}")
-        return []
-    except Exception as e:
-        st.error(f"Error leyendo carpeta: {e}")
+    except Exception:
         return []
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def list_images(path: Path) -> list[Path]:
     """Lista archivos de imagen ordenados por nombre."""
     try:
@@ -220,6 +219,7 @@ def list_images(path: Path) -> list[Path]:
         return []
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def find_merchboards_dir(capsule_path: Path) -> Path | None:
     """Busca la carpeta _MERCHBOARDS dentro de la cápsula."""
     # intento directo
@@ -239,9 +239,10 @@ def find_merchboards_dir(capsule_path: Path) -> Path | None:
 CLASSIC_DIRECT_KEY = "_DIRECTO"
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def find_all_merchboards_in_classic(
     classic_type_path: Path,
-    sub_filter: list[str] | None = None,
+    sub_filter: tuple[str, ...] | None = None,
 ) -> list[Path]:
     """Devuelve carpetas _MERCHBOARDS dentro de un tipo classic.
     Cubre el camino directo Y el camino con sub-producto:
@@ -274,6 +275,7 @@ def find_all_merchboards_in_classic(
     return results
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def list_classic_sub_options(classic_type_path: Path) -> tuple[bool, list[str]]:
     """Devuelve (tiene_merchboards_directo, [nombres_sub_producto])."""
     has_direct = (classic_type_path / "_MERCHBOARDS").is_dir()
@@ -388,11 +390,12 @@ def generate_deck(ppt_bytes: bytes, merch_map: dict):
 
         img = imgs[used[matched_key]]
         used[matched_key] += 1
+        img_bytes = img.get("bytes") or img["path"].read_bytes()
 
         pics = [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
 
         if pics:
-            if replace_picture_blob(pics[0], img["bytes"]):
+            if replace_picture_blob(pics[0], img_bytes):
                 replaced += 1
                 log.append(("ok", f"Slide {idx} → {matched_key} → {img['name']}"))
             else:
@@ -400,7 +403,7 @@ def generate_deck(ppt_bytes: bytes, merch_map: dict):
         else:
             try:
                 slide.shapes.add_picture(
-                    io.BytesIO(img["bytes"]),
+                    io.BytesIO(img_bytes),
                     left=INSERT_LEFT, top=INSERT_TOP,
                     width=INSERT_WIDTH, height=INSERT_HEIGHT,
                 )
@@ -655,7 +658,7 @@ if modo == "🖥️  Desde el servidor":
                                 leagues_set.add(d)
 
             for ct in sel_classic_types:
-                sub_filter = classic_sub_selections.get(ct) or None
+                sub_filter = tuple(classic_sub_selections.get(ct) or []) or None
                 for label, src_path in classic_sources.items():
                     ct_path = src_path / ct
                     if ct_path.is_dir():
@@ -683,7 +686,7 @@ if modo == "🖥️  Desde el servidor":
                                         teams_set.add(t)
 
                 for ct in sel_classic_types:
-                    sub_filter = classic_sub_selections.get(ct) or None
+                    sub_filter = tuple(classic_sub_selections.get(ct) or []) or None
                     for label, src_path in classic_sources.items():
                         ct_path = src_path / ct
                         if ct_path.is_dir():
@@ -719,14 +722,14 @@ if modo == "🖥️  Desde el servidor":
                     loaded_routes.append(f"{label} / {cap_folder}")
                     for img in images:
                         merch_map.setdefault(cap_key, []).append({
-                            "name":  img.name,
-                            "bytes": img.read_bytes(),
+                            "name": img.name,
+                            "path": img,
                         })
                     detected_team = sel_team
 
             # Classics
             for ct_folder in sel_classic_types:
-                sub_filter = classic_sub_selections.get(ct_folder) or None
+                sub_filter = tuple(classic_sub_selections.get(ct_folder) or []) or None
                 for label, src_path in classic_sources.items():
                     ct_path = src_path / ct_folder
                     if not ct_path.is_dir():
@@ -740,8 +743,8 @@ if modo == "🖥️  Desde el servidor":
                         loaded_routes.append(f"{label} / _CLASSIC / {ct_folder}")
                         for img in images:
                             merch_map.setdefault(cap_key, []).append({
-                                "name":  img.name,
-                                "bytes": img.read_bytes(),
+                                "name": img.name,
+                                "path": img,
                             })
                     detected_team = sel_team
 

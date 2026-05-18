@@ -14,19 +14,48 @@ st.set_page_config(page_title="Deck Builder — Pro Standard", page_icon="🏆",
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
-.main-title  { font-family: 'Bebas Neue', sans-serif; font-size: 3rem;   letter-spacing: 4px; color: #e8c84a; margin-bottom: 0; }
-.sub-title   { font-family: 'Bebas Neue', sans-serif; font-size: 1.1rem; letter-spacing: 3px; color: #888;     margin-top: 0; }
-.section-h   { font-family: 'Bebas Neue', sans-serif; font-size: 1.4rem; letter-spacing: 2px; color: #f5f5f0;  margin-top: 1.5rem; }
-.pill-ok     { background: rgba(74,222,128,0.12); border:1px solid rgba(74,222,128,0.4); color:#4ade80; padding:2px 10px; border-radius:3px; font-size:0.75rem; letter-spacing:1px; }
-.pill-warn   { background: rgba(248,113,113,0.12); border:1px solid rgba(248,113,113,0.4); color:#f87171; padding:2px 10px; border-radius:3px; font-size:0.75rem; letter-spacing:1px; }
-.capsule-card { background:#1a1a1a; border:1px solid #2a2a2a; border-radius:4px; padding:10px 14px; }
-.capsule-card.match { border-color:#4ade80; }
-.capsule-card h4 { font-family:'Bebas Neue',sans-serif; font-size:1rem; letter-spacing:1.5px; color:#f5f5f0; margin:0; }
-.capsule-card p  { font-size:0.75rem; color:#888; margin:2px 0 0 0; }
-.team-badge { display:inline-block; padding:6px 14px; background:rgba(232,200,74,0.1);
-              border:1px solid rgba(232,200,74,0.3); border-radius:3px; font-size:0.85rem; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Bebas+Neue&display=swap');
+
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+/* ── Header ── */
+.main-title { font-family:'Bebas Neue',sans-serif; font-size:2.2rem; letter-spacing:5px;
+              color:#111827; margin-bottom:0; }
+.sub-title  { font-size:0.72rem; letter-spacing:3px; color:#6b7280;
+              text-transform:uppercase; margin-top:2px; }
+
+/* ── Section headers ── */
+.section-h  { font-size:0.7rem; font-weight:600; letter-spacing:2px;
+              text-transform:uppercase; color:#6b7280;
+              border-bottom:1px solid #e5e7eb; padding-bottom:6px;
+              margin-top:1.8rem; margin-bottom:0.4rem; }
+
+/* ── Status pills ── */
+.pill-ok   { display:inline-block; background:#d1fae5; border:1px solid #6ee7b7;
+             color:#065f46; padding:3px 10px; border-radius:4px;
+             font-size:0.72rem; font-weight:600; letter-spacing:0.5px; }
+.pill-warn { display:inline-block; background:#fee2e2; border:1px solid #fca5a5;
+             color:#991b1b; padding:3px 10px; border-radius:4px;
+             font-size:0.72rem; font-weight:600; letter-spacing:0.5px; }
+
+/* ── Capsule cards ── */
+.capsule-card { background:#fff; border:1px solid #e5e7eb;
+                border-radius:6px; padding:10px 14px; }
+.capsule-card.match { border-left:3px solid #2563eb; }
+.capsule-card h4 { font-size:0.78rem; font-weight:600; letter-spacing:1px;
+                   text-transform:uppercase; color:#111827; margin:0; }
+.capsule-card p  { font-size:0.72rem; color:#6b7280; margin:3px 0 0 0; }
+
+/* ── Team badge ── */
+.team-badge { display:inline-block; padding:6px 14px;
+              background:#eff6ff; border:1px solid #bfdbfe;
+              border-radius:4px; font-size:0.82rem; color:#1e40af; font-weight:500; }
+
+/* ── Sidebar ── */
+section[data-testid="stSidebar"] { background:#1e293b !important; }
+section[data-testid="stSidebar"] * { color:#e2e8f0 !important; }
+section[data-testid="stSidebar"] input { background:#334155 !important;
+                                          border-color:#475569 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -547,10 +576,10 @@ if ppt_file:
 
             with st.expander(f"Ver detalle ({len(slides_found)} slides)", expanded=False):
                 for s in slides_found:
-                    gender_badge = f" · {s['gender']}" if s["gender"] else " · <span style='color:#f87171'>sin género</span>"
+                    gender_badge = f" · {s['gender']}" if s["gender"] else " · <span style='color:#dc2626'>sin género</span>"
                     st.markdown(
-                        f'<div style="font-size:0.78rem;color:#aaa;padding:1px 0;">'
-                        f'Slide {s["slide"]} &nbsp;→&nbsp; <span style="color:#f5f5f0">{s["capsule"]}</span>{gender_badge}</div>',
+                        f'<div style="font-size:0.78rem;color:#6b7280;padding:1px 0;">'
+                        f'Slide {s["slide"]} &nbsp;→&nbsp; <span style="color:#111827;font-weight:500">{s["capsule"]}</span>{gender_badge}</div>',
                         unsafe_allow_html=True,
                     )
         else:
@@ -846,9 +875,9 @@ if modo == "🖥️  Desde el servidor":
                 with st.expander("Ver resumen por equipo", expanded=False):
                     for (lg, tm), n in sorted(by_team.items()):
                         st.markdown(
-                            f'<div style="font-size:0.8rem;color:#aaa;">'
-                            f'<span style="color:#e8c84a">{lg}</span> · '
-                            f'<span style="color:#f5f5f0">{tm}</span> · {n} img</div>',
+                            f'<div style="font-size:0.8rem;color:#6b7280;">'
+                            f'<span style="color:#2563eb;font-weight:500">{lg}</span> · '
+                            f'<span style="color:#111827">{tm}</span> · {n} img</div>',
                             unsafe_allow_html=True,
                         )
             else:
@@ -905,8 +934,8 @@ if modo == "🖥️  Desde el servidor":
             if detected_team:
                 st.markdown(
                     f'<div class="team-badge">'
-                    f'<span style="color:#888;font-size:0.7rem;letter-spacing:1px;">EQUIPO · </span>'
-                    f'<span style="color:#e8c84a;font-family:\'Bebas Neue\',sans-serif;letter-spacing:1px;">'
+                    f'<span style="color:#6b7280;font-size:0.7rem;letter-spacing:1px;font-weight:600;">EQUIPO · </span>'
+                    f'<span style="color:#1e40af;font-weight:600;letter-spacing:0.5px;">'
                     f'{sel_team}</span></div>',
                     unsafe_allow_html=True,
                 )
@@ -1028,9 +1057,10 @@ else:
                 for r in mapping_preview:
                     if r["Cápsula matcheada"] != "⚠ sin match":
                         st.markdown(
-                            f'<div style="font-size:0.8rem;color:#4ade80;padding:1px 0;">'
-                            f'Slide {r["Slide"]} &nbsp;→&nbsp; {r["Cápsula matcheada"]} '
-                            f'<span style="color:#888">· {r["Imágenes disponibles"]} img</span></div>',
+                            f'<div style="font-size:0.8rem;color:#059669;padding:1px 0;">'
+                            f'Slide {r["Slide"]} &nbsp;→&nbsp; '
+                            f'<span style="color:#111827;font-weight:500">{r["Cápsula matcheada"]}</span> '
+                            f'<span style="color:#6b7280">· {r["Imágenes disponibles"]} img</span></div>',
                             unsafe_allow_html=True,
                         )
         with col_bad:
@@ -1039,9 +1069,9 @@ else:
                     for r in mapping_preview:
                         if r["Cápsula matcheada"] == "⚠ sin match":
                             st.markdown(
-                                f'<div style="font-size:0.8rem;color:#f87171;padding:1px 0;">'
+                                f'<div style="font-size:0.8rem;color:#dc2626;padding:1px 0;">'
                                 f'Slide {r["Slide"]} &nbsp;→&nbsp; '
-                                f'<span style="color:#888">{r["Nota"]}</span></div>',
+                                f'<span style="color:#6b7280">{r["Nota"]}</span></div>',
                                 unsafe_allow_html=True,
                             )
 
@@ -1067,7 +1097,7 @@ else:
             with st.expander(f"✓ {len(_ok_log)} actualizadas", expanded=False):
                 for _, msg in _ok_log:
                     st.markdown(
-                        f'<div style="font-size:0.8rem;color:#4ade80;padding:1px 0;">✓ {msg}</div>',
+                        f'<div style="font-size:0.8rem;color:#059669;padding:1px 0;">✓ {msg}</div>',
                         unsafe_allow_html=True,
                     )
         with col_bad:
@@ -1075,7 +1105,7 @@ else:
                 with st.expander(f"⚠ {len(_bad_log)} advertencia(s)", expanded=False):
                     for lvl, msg in _bad_log:
                         icon  = "⚠" if lvl == "warn" else "✗"
-                        color = "#e8c84a" if lvl == "warn" else "#f87171"
+                        color = "#d97706" if lvl == "warn" else "#dc2626"
                         st.markdown(
                             f'<div style="font-size:0.8rem;color:{color};padding:1px 0;">{icon} {msg}</div>',
                             unsafe_allow_html=True,

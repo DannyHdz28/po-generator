@@ -126,10 +126,13 @@ def extract_capsule_from_folder(folder_name: str, category: str) -> str:
     """Extrae clave de cápsula del nombre de carpeta del servidor.
     Ej: '01·01 - Q1 2027 MENS TEAM CITY' + 'MENS' → 'TEAM CITY M'
          '01·01 - Q1 2027 WMNS FLORAL SPORT' + 'WOMENS' → 'FLORAL SPORT W'
+         '01·01 - Q1 2027 COLLEGE MENS TEAM CITY' + 'COLLEGE' → 'TEAM CITY M'
     """
     n = re.sub(r'^.+?[-–]\s*', '', folder_name).strip()
     n = re.sub(r'^Q\d\s+\d{4}\s+', '', n, flags=re.IGNORECASE).strip()
     cat_upper = category.upper()
+
+    # 1. Strip category prefix (known abbreviations or full name)
     for prefix in CAT_FOLDER_PREFIXES.get(cat_upper, [cat_upper]):
         if n.upper().startswith(prefix + " "):
             n = n[len(prefix):].strip()
@@ -137,7 +140,32 @@ def extract_capsule_from_folder(folder_name: str, category: str) -> str:
         elif n.upper() == prefix:
             n = ""
             break
+
+    # 2. Gender from category name
     gender = CATEGORY_TO_GENDER.get(cat_upper)
+
+    # 3. If gender still unknown, check if a gender token now leads the string
+    #    (e.g. after stripping "COLLEGE" we have "MENS TEAM CITY")
+    if not gender:
+        all_gender_prefixes = [
+            (p, g)
+            for cat_list, g in [
+                (["MENS", "MNS"], "M"),
+                (["WOMENS", "WMNS", "WNS"], "W"),
+                (["KIDS", "KDS", "BOYS", "GIRLS"], "K"),
+            ]
+            for p in cat_list
+        ]
+        for prefix, g in all_gender_prefixes:
+            if n.upper().startswith(prefix + " "):
+                gender = g
+                n = n[len(prefix):].strip()
+                break
+            elif n.upper() == prefix:
+                gender = g
+                n = ""
+                break
+
     key = n.upper()
     if gender and key:
         key = f"{key} {gender}"
@@ -582,16 +610,20 @@ if modo == "🖥️  Desde el servidor":
         # ── Año (para seasonal) ──
         sel_year = None
         if sel_categories:
-            non_kids = [c for c in sel_categories if c.upper() != "KIDS"]
-            if non_kids:
-                year_base = base_path / non_kids[0]
-            else:
-                kids_subs_y = list_dirs(base_path / "KIDS")
-                year_base = base_path / "KIDS" / kids_subs_y[0] if kids_subs_y else None
-            if year_base and year_base.is_dir():
-                years = [d for d in list_dirs(year_base) if not d.startswith("_")]
-                if years:
-                    sel_year = st.selectbox("Año", years, key="srv_year")
+            years_set = set()
+            for cat in sel_categories:
+                if cat.upper() == "KIDS":
+                    for sub in kids_sub_selection:
+                        for y in list_dirs(base_path / cat / sub):
+                            if not y.startswith("_"):
+                                years_set.add(y)
+                else:
+                    for y in list_dirs(base_path / cat):
+                        if not y.startswith("_"):
+                            years_set.add(y)
+            years = sorted(years_set)
+            if years:
+                sel_year = st.selectbox("Año", years, key="srv_year")
 
         # ── Cápsulas Seasonal ──
         sel_capsule_folders = []

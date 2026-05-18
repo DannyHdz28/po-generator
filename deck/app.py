@@ -1021,16 +1021,32 @@ else:
     no_match = sum(1 for r in mapping_preview if r["Cápsula matcheada"] == "⚠ sin match")
     matched  = len(mapping_preview) - no_match
 
-    _map_badges = [f'<span class="pill-ok">{matched} CON IMAGEN</span>']
-    if no_match:
-        _map_badges.append(f'<span class="pill-warn">{no_match} SIN MATCH</span>')
     if mapping_preview:
-        st.markdown(" &nbsp; ".join(_map_badges), unsafe_allow_html=True)
-        with st.expander("Ver mapping de slides", expanded=False):
-            st.dataframe(mapping_preview, hide_index=True, use_container_width=True)
+        col_ok, col_bad = st.columns(2)
+        with col_ok:
+            with st.expander(f"✓ {matched} con imagen", expanded=False):
+                for r in mapping_preview:
+                    if r["Cápsula matcheada"] != "⚠ sin match":
+                        st.markdown(
+                            f'<div style="font-size:0.8rem;color:#4ade80;padding:1px 0;">'
+                            f'Slide {r["Slide"]} &nbsp;→&nbsp; {r["Cápsula matcheada"]} '
+                            f'<span style="color:#888">· {r["Imágenes disponibles"]} img</span></div>',
+                            unsafe_allow_html=True,
+                        )
+        with col_bad:
+            if no_match:
+                with st.expander(f"⚠ {no_match} sin match", expanded=False):
+                    for r in mapping_preview:
+                        if r["Cápsula matcheada"] == "⚠ sin match":
+                            st.markdown(
+                                f'<div style="font-size:0.8rem;color:#f87171;padding:1px 0;">'
+                                f'Slide {r["Slide"]} &nbsp;→&nbsp; '
+                                f'<span style="color:#888">{r["Nota"]}</span></div>',
+                                unsafe_allow_html=True,
+                            )
 
     if no_match:
-        st.warning(f"⚠ {no_match} slide(s) sin imágenes coincidentes — quedarán sin cambios.")
+        st.caption(f"⚠ {no_match} slide(s) sin imágenes — quedarán sin cambios.")
 
     if st.button("Generar Deck →", type="primary"):
         with st.spinner("Procesando slides..."):
@@ -1042,26 +1058,29 @@ else:
         st.session_state["deck_name"]     = f"{base_name} — {detected_team or 'EQUIPO'}.pptx"
 
     if "deck_out" in st.session_state:
-        _log   = st.session_state["deck_log"]
-        _warns = sum(1 for lvl, _ in _log if lvl == "warn")
-        _errs  = sum(1 for lvl, _ in _log if lvl == "err")
+        _log      = st.session_state["deck_log"]
+        _ok_log   = [(l, m) for l, m in _log if l == "ok"]
+        _bad_log  = [(l, m) for l, m in _log if l in ("warn", "err")]
 
-        _badges = [f'<span class="pill-ok">✓ {st.session_state["deck_replaced"]} ACTUALIZADAS</span>']
-        if _warns:
-            _badges.append(f'<span class="pill-warn">⚠ {_warns} ADVERTENCIA(S)</span>')
-        if _errs:
-            _badges.append(f'<span class="pill-warn">✗ {_errs} ERROR(ES)</span>')
-        st.markdown(" &nbsp; ".join(_badges), unsafe_allow_html=True)
+        col_ok, col_bad = st.columns(2)
+        with col_ok:
+            with st.expander(f"✓ {len(_ok_log)} actualizadas", expanded=False):
+                for _, msg in _ok_log:
+                    st.markdown(
+                        f'<div style="font-size:0.8rem;color:#4ade80;padding:1px 0;">✓ {msg}</div>',
+                        unsafe_allow_html=True,
+                    )
+        with col_bad:
+            if _bad_log:
+                with st.expander(f"⚠ {len(_bad_log)} advertencia(s)", expanded=False):
+                    for lvl, msg in _bad_log:
+                        icon  = "⚠" if lvl == "warn" else "✗"
+                        color = "#e8c84a" if lvl == "warn" else "#f87171"
+                        st.markdown(
+                            f'<div style="font-size:0.8rem;color:{color};padding:1px 0;">{icon} {msg}</div>',
+                            unsafe_allow_html=True,
+                        )
         st.write("")
-
-        with st.expander("Ver detalle del proceso", expanded=False):
-            for lvl, msg in _log:
-                icon  = {"ok": "✓", "warn": "⚠", "err": "✗"}.get(lvl, "·")
-                color = {"ok": "#4ade80", "warn": "#e8c84a", "err": "#f87171"}.get(lvl, "#888")
-                st.markdown(
-                    f'<div style="font-size:0.8rem;color:{color};">{icon} {msg}</div>',
-                    unsafe_allow_html=True,
-                )
 
         st.download_button(
             "⬇ Descargar PPT",

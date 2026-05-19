@@ -178,8 +178,6 @@ GLOSSARY = {
     "size_3xl": ["3XL","XXXL","3X","3X-LARGE","3X LARGE","TRIPLE XL"],
     "size_4xl": ["4XL","XXXXL","4X","4X-LARGE","4X LARGE"],
     "size_5xl": ["5XL","XXXXXL","5X","5X-LARGE","5X LARGE"],
-    "size_4xl": ["4XL","XXXXL","4X","4X-LARGE","4X LARGE"],
-    "size_5xl": ["5XL","XXXXXL","5X","5X-LARGE","5X LARGE"],
 }
 
 SIZE_ORDER   = ["OS","XXS","XS","S","M","L","XL","2XL","3XL","4XL","5XL"]

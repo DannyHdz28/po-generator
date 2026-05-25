@@ -1,0 +1,3 @@
+@echo off
+echo Iniciando UPCs Generator...
+streamlit run upcs_app.py --server.port 8502

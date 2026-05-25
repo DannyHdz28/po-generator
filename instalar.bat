@@ -4,7 +4,7 @@ echo    UPCS GENERATOR - Instalador
 echo ============================================
 echo.
 
-python --version >/dev/null 2>&1
+python --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python no esta instalado.
     echo Descargalo de https://www.python.org/downloads/
@@ -16,8 +16,8 @@ if errorlevel 1 (
 echo Instalando dependencias...
 pip install streamlit pandas openpyxl requests playwright -q
 
-echo Instalando browser para automatizacion...
-playwright install chromium
+echo Instalando Chrome para automatizacion...
+python -m playwright install chromium
 
 echo.
 echo ============================================

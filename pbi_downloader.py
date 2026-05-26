@@ -67,27 +67,58 @@ async def download_all_sizes(progress_fn=None):
         files = []
         try:
             async with page.expect_download(timeout=300000) as dl_info:
-                # Try toolbar export button first
+                # Hover over the visual title to reveal the ... button
                 try:
-                    export_btn = page.locator('[title="Exportar"]').first
-                    await export_btn.click(timeout=5000)
+                    await page.locator("text=STYLE UPC REPORT").first.hover()
+                    await asyncio.sleep(2)
                 except Exception:
                     pass
 
-                await asyncio.sleep(2)
+                # Try multiple selectors for the ... (more options) button
+                clicked = False
+                for selector in [
+                    '[aria-label="Más opciones"]',
+                    '[aria-label="More options"]',
+                    '[title="Más opciones"]',
+                    '[title="More options"]',
+                    'button[aria-label*="pciones"]',
+                    'button[aria-label*="ption"]',
+                ]:
+                    try:
+                        btn = page.locator(selector).first
+                        await btn.hover(timeout=3000)
+                        await asyncio.sleep(0.5)
+                        await btn.click(timeout=3000)
+                        await asyncio.sleep(1)
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
 
-                # Try Archivo > Exportar menu
-                try:
-                    await page.get_by_text("Archivo").first.click()
-                    await asyncio.sleep(1)
-                    await page.get_by_text("Exportar").first.click()
-                    await asyncio.sleep(1)
-                except Exception:
-                    pass
+                # Try via iframes if page selectors failed
+                if not clicked:
+                    for frame in page.frames:
+                        for selector in ['[aria-label="Más opciones"]', '[aria-label="More options"]']:
+                            try:
+                                btn = frame.locator(selector).first
+                                await btn.click(timeout=3000)
+                                clicked = True
+                                break
+                            except Exception:
+                                continue
+                        if clicked:
+                            break
 
-                # Confirm dialog if appears
+                if progress_fn:
+                    progress_fn("Buscando opcion Exportar datos...")
+
+                # Click "Exportar datos"
+                await page.get_by_text("Exportar datos").first.click(timeout=10000)
+                await asyncio.sleep(1)
+
+                # Confirm export dialog if appears
                 try:
-                    await page.get_by_role("button", name="Exportar").last.click()
+                    await page.get_by_role("button", name="Exportar").last.click(timeout=5000)
                     await asyncio.sleep(1)
                 except Exception:
                     pass

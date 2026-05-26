@@ -13,7 +13,8 @@ st.markdown("""
 html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
 .main-title{font-family:'Bebas Neue',sans-serif;font-size:3rem;letter-spacing:4px;color:#e8c84a;}
 .sub-title{font-family:'Bebas Neue',sans-serif;font-size:1.1rem;letter-spacing:3px;color:#888;}
-.success-box{background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.4);border-radius:6px;padding:10px 14px;font-size:0.85rem;color:#4ade80;}
+.success-box{background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.4);border-radius:6px;padding:12px 16px;font-size:0.9rem;color:#4ade80;}
+.step-box{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:12px 16px;font-size:0.85rem;color:#ccc;margin-bottom:8px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -23,47 +24,64 @@ st.markdown("---")
 
 SIZES = ["2T", "3T", "4", "4T", "5", "6", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
 
+st.markdown("#### Paso 1 — Descarga el archivo de Power BI")
+st.markdown("""
+<div class="step-box">
+1. Entra a <b>reports.maximaapparel.com</b> → Style UPC Report<br>
+2. Filtra <b>ENTITY = PRO STANDARD US</b><br>
+3. Haz clic en el visual → <b>...</b> → <b>Exportar datos</b><br>
+4. Sube el archivo descargado aquí abajo
+</div>
+""", unsafe_allow_html=True)
+
+uploaded = st.file_uploader("Sube el archivo exportado de Power BI", type=["xlsx", "csv"], accept_multiple_files=True)
+
+st.markdown("#### Paso 2 — Genera el archivo")
+file_date = st.date_input("Fecha", value=date.today())
+
 
 def build_base(files):
     all_rows = []
     for f in files:
-        try:
-            df = pd.read_excel(f, header=2, dtype=str)
-            df.columns = [str(c).strip() for c in df.columns]
+        for header_row in [2, 0, 1, 3]:
+            try:
+                df = pd.read_excel(f, header=header_row, dtype=str)
+                df.columns = [str(c).strip() for c in df.columns]
 
-            rename = {}
-            for col in df.columns:
-                cl = col.lower().strip()
-                if cl in ["ivnum", "estilo", "style"]:
-                    rename[col] = "Style"
-                elif cl in ["size", "talla"]:
-                    rename[col] = "Size"
-                elif cl == "upc":
-                    rename[col] = "UPC"
-                elif cl in ["description", "descripcion", "descripción"]:
-                    rename[col] = "DESCRIPTION"
-                elif cl in ["wholesale", "mayoreo"]:
-                    rename[col] = "WHOLESALE"
-                elif cl == "msrp":
-                    rename[col] = "MSRP"
-            df = df.rename(columns=rename)
+                rename = {}
+                for col in df.columns:
+                    cl = col.lower().strip()
+                    if cl in ["ivnum", "estilo", "style"]:
+                        rename[col] = "Style"
+                    elif cl in ["size", "talla"]:
+                        rename[col] = "Size"
+                    elif cl == "upc":
+                        rename[col] = "UPC"
+                    elif cl in ["description", "descripcion", "descripción"]:
+                        rename[col] = "DESCRIPTION"
+                    elif cl in ["wholesale", "mayoreo"]:
+                        rename[col] = "WHOLESALE"
+                    elif cl == "msrp":
+                        rename[col] = "MSRP"
+                df = df.rename(columns=rename)
 
-            if "Style" not in df.columns or "UPC" not in df.columns:
+                if "Style" not in df.columns or "UPC" not in df.columns:
+                    continue
+
+                needed = [c for c in ["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"] if c in df.columns]
+                df = df[needed].copy()
+                df["UPC"] = df["UPC"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(12)
+                df = df[df["UPC"].str.strip().str.len() > 3]
+                df = df[df["UPC"].str.strip() != "nan"]
+
+                if "Size" in df.columns:
+                    df = df[df["Size"].isin(SIZES)]
+
+                df = df[df["Style"].notna() & (df["Style"].str.strip() != "")]
+                all_rows.append(df)
+                break
+            except Exception:
                 continue
-
-            needed = [c for c in ["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"] if c in df.columns]
-            df = df[needed].copy()
-            df["UPC"] = df["UPC"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(12)
-            df = df[df["UPC"].str.strip().str.len() > 3]
-            df = df[df["UPC"].str.strip() != "nan"]
-
-            if "Size" in df.columns:
-                df = df[df["Size"].isin(SIZES)]
-
-            df = df[df["Style"].notna() & (df["Style"].str.strip() != "")]
-            all_rows.append(df)
-        except Exception:
-            continue
 
     if not all_rows:
         return pd.DataFrame(columns=["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"])
@@ -116,49 +134,27 @@ def build_output_xlsx(upc_df, base):
     return buf.getvalue()
 
 
-file_date = st.date_input("Fecha", value=date.today())
-st.markdown("<br>", unsafe_allow_html=True)
-
-generate = st.button("GENERAR UPCs", type="primary", use_container_width=True)
-
-if generate:
-    status = st.empty()
-    progress = st.progress(0)
-
-    def update(msg):
-        status.info(msg)
-
-    update("Iniciando descarga desde Power BI...")
-
-    try:
-        from pbi_downloader import run_download
-        files = run_download(progress_fn=update)
-        progress.progress(60)
-
-        update("Procesando archivos...")
-        base_df = build_base(files)
-        progress.progress(80)
+if uploaded:
+    if st.button("GENERAR UPCs", type="primary", use_container_width=True):
+        with st.spinner("Procesando..."):
+            base_df = build_base(uploaded)
 
         if base_df.empty:
-            st.error("No se encontraron datos en los archivos descargados.")
+            st.error("No se encontraron datos. Verifica que el archivo sea el correcto.")
         else:
-            update("Generando archivo final...")
             upc_df = build_upc_sheet(base_df)
             xlsx_bytes = build_output_xlsx(upc_df, base_df)
-            progress.progress(100)
 
-            st.markdown(f'<div class="success-box">Listo — {len(base_df):,} registros procesados</div>',
+            st.markdown(f'<div class="success-box">Listo — {len(base_df):,} registros procesados de {len(uploaded)} archivo(s)</div>',
                         unsafe_allow_html=True)
 
             fname = f"UPCS_{file_date.strftime('%m.%d.%Y')}.xlsx"
             st.download_button(
-                label=f"Descargar {fname}",
+                label=f"⬇ Descargar {fname}",
                 data=xlsx_bytes,
                 file_name=fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
-
-    except Exception as e:
-        st.error(f"Error: {e}")
-        st.info("Verifica que tengas conexion a la red de Maxima y que Power BI este accesible.")
+else:
+    st.info("Sube el archivo de Power BI para continuar.")

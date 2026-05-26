@@ -6,10 +6,7 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 PBI_URL = "https://reports.maximaapparel.com/reports/powerbi/RESOURCES/Style%20UPC%20Report"
 USERNAME = "daniela.hernandez@maximaapparel.com"
 PASSWORD = "Aez1234!1"
-# Windows/NTLM username (without domain)
 WIN_USERNAME = "daniela.hernandez"
-
-SIZES = ["2T", "3T", "4", "4T", "5", "6", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
 
 
 async def _login(page, username, password):
@@ -29,68 +26,6 @@ async def _login(page, username, password):
         pass
 
 
-async def _set_size_filter(page, size, progress_fn=None):
-    try:
-        filter_btn = page.locator('[aria-label="Filtros"]').first
-        if await filter_btn.is_visible():
-            await filter_btn.click()
-            await asyncio.sleep(1)
-    except Exception:
-        pass
-
-    try:
-        size_card = page.locator("text=SIZE").nth(1)
-        await size_card.click()
-        await asyncio.sleep(1)
-    except Exception:
-        pass
-
-    try:
-        select_all = page.get_by_text("Seleccionar todo").first
-        is_checked = await select_all.get_attribute("aria-checked")
-        if is_checked != "false":
-            await select_all.click()
-            await asyncio.sleep(0.5)
-    except Exception:
-        pass
-
-    try:
-        search = page.locator('input[placeholder="Buscar"]').last
-        await search.fill("")
-        await search.fill(size)
-        await asyncio.sleep(1)
-    except Exception:
-        pass
-
-    try:
-        checkbox = page.get_by_text(size, exact=True).first
-        await checkbox.click()
-        await asyncio.sleep(2)
-    except Exception as e:
-        if progress_fn:
-            progress_fn(f"⚠ No se pudo seleccionar talla {size}: {e}")
-
-
-async def _export_file(page, download_dir, filename, progress_fn=None):
-    try:
-        async with page.expect_download(timeout=180000) as dl_info:
-            export_btn = page.locator('[title="Exportar"]').first
-            await export_btn.click()
-            await asyncio.sleep(2)
-            try:
-                await page.get_by_role("button", name="Exportar").last.click()
-            except Exception:
-                pass
-        download = await dl_info.value
-        file_path = os.path.join(download_dir, filename)
-        await download.save_as(file_path)
-        return file_path
-    except Exception as e:
-        if progress_fn:
-            progress_fn(f"⚠ Error exportando {filename}: {e}")
-        return None
-
-
 async def download_all_sizes(progress_fn=None):
     download_dir = tempfile.mkdtemp(prefix="upcs_")
 
@@ -108,32 +43,64 @@ async def download_all_sizes(progress_fn=None):
         await page.goto(PBI_URL, timeout=120000)
 
         if progress_fn:
-            progress_fn("Iniciando sesión...")
+            progress_fn("Iniciando sesion...")
         await _login(page, USERNAME, PASSWORD)
         await page.wait_for_load_state("networkidle", timeout=120000)
-        await asyncio.sleep(8)
+        await asyncio.sleep(10)
 
         if progress_fn:
-            progress_fn("Configurando filtro ENTITY...")
+            progress_fn("Configurando filtro ENTITY = PRO STANDARD US...")
         try:
             entity_dropdown = page.locator("text=Todas").first
             await entity_dropdown.click()
             await asyncio.sleep(2)
             pro_std = page.get_by_text("PRO STANDARD US", exact=True).first
             await pro_std.click()
-            await asyncio.sleep(4)
+            await asyncio.sleep(5)
         except Exception as e:
             if progress_fn:
                 progress_fn(f"Filtro ENTITY: {e}")
 
+        if progress_fn:
+            progress_fn("Exportando datos... (puede tardar 2-3 minutos)")
+
         files = []
-        for i, size in enumerate(SIZES):
+        try:
+            async with page.expect_download(timeout=300000) as dl_info:
+                # Try toolbar export button first
+                try:
+                    export_btn = page.locator('[title="Exportar"]').first
+                    await export_btn.click(timeout=5000)
+                except Exception:
+                    pass
+
+                await asyncio.sleep(2)
+
+                # Try Archivo > Exportar menu
+                try:
+                    await page.get_by_text("Archivo").first.click()
+                    await asyncio.sleep(1)
+                    await page.get_by_text("Exportar").first.click()
+                    await asyncio.sleep(1)
+                except Exception:
+                    pass
+
+                # Confirm dialog if appears
+                try:
+                    await page.get_by_role("button", name="Exportar").last.click()
+                    await asyncio.sleep(1)
+                except Exception:
+                    pass
+
+            download = await dl_info.value
+            file_path = os.path.join(download_dir, "upcs_data.xlsx")
+            await download.save_as(file_path)
+            files.append(file_path)
             if progress_fn:
-                progress_fn(f"Descargando talla {size} ({i+1}/{len(SIZES)})...")
-            await _set_size_filter(page, size, progress_fn)
-            file_path = await _export_file(page, download_dir, f"size_{size}.xlsx", progress_fn)
-            if file_path:
-                files.append(file_path)
+                progress_fn("Descarga completada.")
+        except Exception as e:
+            if progress_fn:
+                progress_fn(f"Error exportando: {e}")
 
         await browser.close()
 

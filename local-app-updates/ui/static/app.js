@@ -2556,7 +2556,10 @@ async function generateDeck() {
   if (isVlps) {
     const adv = state.selection.adv;
     const hasScope = (adv.capsules.length + adv.classics.length) > 0;
-    if (!hasScope || adv.leagues.length === 0) return;
+    // Liga requerida solo si hay ligas disponibles. Si el servidor devolvió 0
+    // ligas (ej. HEADWEAR sin _PPTX VLPS/{liga}/), se descarga todo sin filtro.
+    const hasLeagues = adv.leagues.length > 0 || state.vlpsNoLeaguesAvailable;
+    if (!hasScope || !hasLeagues) return;
     if (state.vlpsFileTypes.length === 0) return;
     doGenerate();
     return;

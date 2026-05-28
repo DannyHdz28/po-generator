@@ -1048,9 +1048,6 @@ class SmbCatalogSource(CatalogSource):
         if not year_path.is_dir():
             return []
         q_dir = self._find_quarter_dir(year_path, quarter)
-        if q_dir is None:
-            return []
-
         # Fallback para categorías sin estructura de quarter (ej. HEADWEAR):
         # si no hay carpeta de quarter, listar cápsulas directo del año.
         scan_dir = q_dir if q_dir is not None else year_path

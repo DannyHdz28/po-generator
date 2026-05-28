@@ -1036,7 +1036,14 @@ async function loadAdvClassics(categories) {
 
 async function loadAdvLeaguesScoped() {
   const adv = state.selection.adv;
-  if (!adv.year || !adv.quarter || (adv.capsules.length + adv.classics.length) === 0) {
+  const isVlps = state.outputMode === 'vlps';
+  const hasScope = (adv.capsules.length + adv.classics.length) > 0;
+  // En VLPS los classics NO requieren quarter (se resuelven por _CLASSICS/...).
+  // El quarter solo es obligatorio si hay cápsulas seasonal en el scope (o en
+  // modo no-VLPS). Sin esto, un scope classics-only de HEADWEAR (quarter null)
+  // salía antes de tiempo y nunca cargaba las ligas → siempre "0 ligas".
+  const quarterRequired = !isVlps || adv.capsules.length > 0;
+  if (!adv.year || !hasScope || (quarterRequired && !adv.quarter)) {
     advLeagues.setOptions([]);
     advLeagues.setDisabled(true);
     return;
@@ -1045,7 +1052,6 @@ async function loadAdvLeaguesScoped() {
     try {
       // En modo VLPS las ligas están en _PPTX/_PDF VLPS, NO en _MERCHBOARDS.
       // Usamos el endpoint correcto según el modo de output.
-      const isVlps = state.outputMode === 'vlps';
       const endpoint = isVlps ? '/api/vlps-leagues' : '/api/leagues-scoped';
       const body = { year: adv.year, quarter: adv.quarter, scope: buildScope() };
       if (isVlps) body.file_types = state.vlpsFileTypes;

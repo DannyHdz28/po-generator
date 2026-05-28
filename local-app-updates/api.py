@@ -1430,11 +1430,8 @@ async def api_gather_vlps(
         un progreso coherente (en VLPS no hay teams, leagues hacen ese rol).
     """
     # ── Validación ──
-    if not req.leagues:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="leagues no puede estar vacío",
-        )
+    # Nota: leagues vacío es VÁLIDO — significa "descargar todos los archivos"
+    # del scope sin filtrar por liga (ej. HEADWEAR sin estructura _PPTX VLPS/{liga}/).
     if not req.file_types or not all(ft in ("ppt", "pdf") for ft in req.file_types):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1458,7 +1455,7 @@ async def api_gather_vlps(
     job = JobStatus(
         job_id=job_id,
         status="queued",
-        teams_total=len(req.leagues),
+        teams_total=max(1, len(req.leagues)),
     )
     with _JOBS_LOCK:
         _JOBS[job_id] = job
@@ -1483,7 +1480,7 @@ async def api_gather_vlps(
         "job_id": job_id,
         "status": "queued",
         "status_url": f"/api/jobs/{job_id}/status",
-        "teams_total": len(req.leagues),
+        "teams_total": max(1, len(req.leagues)),
     }
 
 

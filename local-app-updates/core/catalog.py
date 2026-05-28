@@ -695,6 +695,16 @@ class SmbCatalogSource(CatalogSource):
                     break
         return results
 
+    def _find_classic_base_dir(self, cat_path: Path) -> Path | None:
+        """Busca _CLASSIC o _CLASSICS bajo cat_path.
+        HEADWEAR usa _CLASSICS (con S); otras categorías usan _CLASSIC.
+        """
+        for name in ("_CLASSIC", "_CLASSICS"):
+            p = cat_path / name
+            if p.is_dir():
+                return p
+        return None
+
     def _list_images(self, path: Path) -> list[Path]:
         """Lista archivos de imagen en `path` ordenados por nombre."""
         return sorted(
@@ -726,9 +736,9 @@ class SmbCatalogSource(CatalogSource):
                     for cap in sorted(self._safe_iterdir(q_dir), key=lambda p: p.name):
                         if cap.is_dir():
                             tasks.append(("seasonal", cat_root, label, gender, cap))
-            # Classic: cada carpeta de tipo dentro de _CLASSIC.
-            classic = cat_root / "_CLASSIC"
-            if classic.is_dir():
+            # Classic: cada carpeta de tipo dentro de _CLASSIC o _CLASSICS.
+            classic = self._find_classic_base_dir(cat_root)
+            if classic is not None:
                 for ct in sorted(self._safe_iterdir(classic), key=lambda p: p.name):
                     if ct.is_dir():
                         tasks.append(("classic", cat_root, label, gender, ct))
@@ -1048,19 +1058,39 @@ class SmbCatalogSource(CatalogSource):
         if not year_path.is_dir():
             return []
         q_dir = self._find_quarter_dir(year_path, quarter)
-        # Fallback para categorías sin estructura de quarter (ej. HEADWEAR):
-        # si no hay carpeta de quarter, listar cápsulas directo del año.
-        scan_dir = q_dir if q_dir is not None else year_path
+        if q_dir is not None:
+            scan_dirs = [q_dir]
+        else:
+            # Sin Q1-Q4: categorías como HEADWEAR usan temporadas (FALL 2025·).
+            # Buscar subdirs no-underscore del año; si tienen sub-carpetas propias
+            # son temporadas y las cápsulas reales están dentro de ellas.
+            season_dirs = [
+                d for d in self._safe_iterdir(year_path)
+                if d.is_dir() and not d.name.startswith("_")
+            ]
+            if season_dirs and any(
+                any(s.is_dir() and not s.name.startswith("_")
+                    for s in self._safe_iterdir(sd))
+                for sd in season_dirs
+            ):
+                scan_dirs = season_dirs
+            else:
+                scan_dirs = [year_path]
 
         items: list[dict] = []
-        for cap_folder in sorted(self._safe_iterdir(scan_dir), key=lambda p: p.name):
-            if not cap_folder.is_dir():
-                continue
-            cap_key = extract_capsule_from_folder(cap_folder.name, label)
-            items.append({
-                "folder_name": cap_folder.name,
-                "capsule_key": cap_key,
-            })
+        seen: set[str] = set()
+        for scan_dir in scan_dirs:
+            for cap_folder in sorted(self._safe_iterdir(scan_dir), key=lambda p: p.name):
+                if not cap_folder.is_dir() or cap_folder.name.startswith("_"):
+                    continue
+                if cap_folder.name in seen:
+                    continue
+                seen.add(cap_folder.name)
+                cap_key = extract_capsule_from_folder(cap_folder.name, label)
+                items.append({
+                    "folder_name": cap_folder.name,
+                    "capsule_key": cap_key,
+                })
         return items
 
     @cachedmethod(
@@ -1073,8 +1103,8 @@ class SmbCatalogSource(CatalogSource):
 
         Independiente de year/quarter — los classics son atemporales.
         """
-        classic_dir = self._category_to_path(category) / "_CLASSIC"
-        if not classic_dir.is_dir():
+        classic_dir = self._find_classic_base_dir(self._category_to_path(category))
+        if classic_dir is None:
             return []
         return sorted(
             d.name for d in self._safe_iterdir(classic_dir) if d.is_dir()
@@ -1099,7 +1129,10 @@ class SmbCatalogSource(CatalogSource):
         El frontend lo usa para que el usuario elija qué partes del classic
         incluir; el scope final lleva la lista de sub-productos elegidos.
         """
-        ct_path = self._category_to_path(category) / "_CLASSIC" / classic_type
+        classic_base = self._find_classic_base_dir(self._category_to_path(category))
+        if classic_base is None:
+            return []
+        ct_path = classic_base / classic_type
         if not ct_path.is_dir():
             return []
 
@@ -1118,6 +1151,21 @@ class SmbCatalogSource(CatalogSource):
                 if sd.is_dir() and "MERCHBOARD" in sd.name.upper():
                     options.append(sub.name)
                     break
+
+        # Fallback HEADWEAR _CLASSICS: si no hay _MERCHBOARDS en ningún nivel
+        # pero sí hay subdirs con archivos de presentación (liga/files), exponer
+        # CLASSIC_DIRECT_KEY para que el scope pueda incluir el classic type entero.
+        if not options:
+            vlps_exts = frozenset({".pptx", ".ppt", ".pdf"})
+            has_league_files = any(
+                sub.is_dir() and not sub.name.startswith("_") and
+                any(f.is_file() and f.suffix.lower() in vlps_exts
+                    for f in self._safe_iterdir(sub))
+                for sub in self._safe_iterdir(ct_path)
+            )
+            if has_league_files:
+                options.append(CLASSIC_DIRECT_KEY)
+
         return options
 
     # ─── Helpers privados para los métodos scoped ─────────────────
@@ -1153,13 +1201,17 @@ class SmbCatalogSource(CatalogSource):
         if not year_path.is_dir():
             return None
         q_dir = self._find_quarter_dir(year_path, quarter)
-        # Fallback para categorías sin estructura de quarter (ej. HEADWEAR):
-        # la cápsula está directamente bajo el año.
-        scan_dir = q_dir if q_dir is not None else year_path
-        cap_path = scan_dir / capsule_folder
-        if not cap_path.is_dir():
-            return None
-        return cap_path
+        if q_dir is not None:
+            cap_path = q_dir / capsule_folder
+            return cap_path if cap_path.is_dir() else None
+        # Sin Q1-Q4: buscar la cápsula dentro de cada temporada (FALL 2025·, etc.).
+        for season_dir in self._safe_iterdir(year_path):
+            if not season_dir.is_dir() or season_dir.name.startswith("_"):
+                continue
+            cap_path = season_dir / capsule_folder
+            if cap_path.is_dir():
+                return cap_path
+        return None
 
     def _resolve_seasonal_mb(
         self, year: str, quarter: str, category: str, capsule_folder: str
@@ -1182,7 +1234,10 @@ class SmbCatalogSource(CatalogSource):
         Si `subproduct == CLASSIC_DIRECT_KEY`, busca `_MERCHBOARDS` directo
         bajo el classic_type. Si no, busca dentro de la sub-carpeta.
         """
-        ct_path = self._category_to_path(category) / "_CLASSIC" / classic_type
+        classic_base = self._find_classic_base_dir(self._category_to_path(category))
+        if classic_base is None:
+            return None
+        ct_path = classic_base / classic_type
         if not ct_path.is_dir():
             return None
 
@@ -1349,6 +1404,38 @@ class SmbCatalogSource(CatalogSource):
                 ))
         return out
 
+    def _walk_vlps_flat_files(
+        self,
+        cap_path: Path,
+        leagues: list[str],
+        file_type: str,
+        capsule: str,
+        category: str,
+    ) -> list[VlpsFileRef]:
+        """Walkea archivos planos donde la liga aparece al final del nombre.
+        Patrón: *_{LIGA}.ext — usado en HEADWEAR (ej. Q3_FA25-ON CAMPUS_MLB.pdf).
+        """
+        exts = _VLPS_EXTENSIONS.get(file_type, frozenset())
+        league_set_upper = {l.upper() for l in leagues}
+        out: list[VlpsFileRef] = []
+        for f in self._safe_iterdir(cap_path):
+            if not f.is_file() or f.suffix.lower() not in exts:
+                continue
+            parts = f.stem.rsplit("_", 1)
+            if len(parts) < 2:
+                continue
+            league = parts[-1]
+            if league.upper() in league_set_upper:
+                out.append(VlpsFileRef(
+                    key=str(f),
+                    filename=f.name,
+                    file_type=file_type,
+                    capsule=capsule,
+                    league=league,
+                    category=category,
+                ))
+        return out
+
     def scan_vlps_files(
         self,
         year: str,
@@ -1380,11 +1467,16 @@ class SmbCatalogSource(CatalogSource):
             cap_name = _strip_gender_suffix(cap_full) or cap_full
             for ft in file_types:
                 vlps_dir = self._find_vlps_dir(cap_path, ft)
-                if vlps_dir is None:
-                    continue
-                out.extend(self._walk_vlps_files_in_folder(
-                    vlps_dir, leagues, ft, cap_name, cat,
-                ))
+                if vlps_dir is not None:
+                    out.extend(self._walk_vlps_files_in_folder(
+                        vlps_dir, leagues, ft, cap_name, cat,
+                    ))
+                else:
+                    # Fallback: archivos planos con liga al final (*_{LIGA}.ext).
+                    # Patrón HEADWEAR: Q3_FA25-ON CAMPUS_MLB.pdf
+                    out.extend(self._walk_vlps_flat_files(
+                        cap_path, leagues, ft, cap_name, cat,
+                    ))
 
         # ── Classics ──
         for cs in scope.get("classics", []) or []:
@@ -1396,8 +1488,11 @@ class SmbCatalogSource(CatalogSource):
             label = self._category_label(cat)
             cap_full = extract_capsule_from_classic(classic_type, label)
             cap_name = _strip_gender_suffix(cap_full) or cap_full
+            classic_base = self._find_classic_base_dir(self._category_to_path(cat))
+            if classic_base is None:
+                continue
             for sub in subs:
-                ct_path = self._category_to_path(cat) / "_CLASSIC" / classic_type
+                ct_path = classic_base / classic_type
                 if not ct_path.is_dir():
                     continue
                 if sub == CLASSIC_DIRECT_KEY:
@@ -1408,11 +1503,16 @@ class SmbCatalogSource(CatalogSource):
                         continue
                 for ft in file_types:
                     vlps_dir = self._find_vlps_dir(target_path, ft)
-                    if vlps_dir is None:
-                        continue
-                    out.extend(self._walk_vlps_files_in_folder(
-                        vlps_dir, leagues, ft, cap_name, cat,
-                    ))
+                    if vlps_dir is not None:
+                        out.extend(self._walk_vlps_files_in_folder(
+                            vlps_dir, leagues, ft, cap_name, cat,
+                        ))
+                    else:
+                        # Fallback: subdirs de liga directamente en target_path.
+                        # Patrón HEADWEAR _CLASSICS: _CLASSICS/CLASSIC LOGO·/MLB/[files]
+                        out.extend(self._walk_vlps_files_in_folder(
+                            target_path, leagues, ft, cap_name, cat,
+                        ))
 
         return out
 
@@ -1435,19 +1535,30 @@ class SmbCatalogSource(CatalogSource):
                 continue
             for ft in file_types:
                 vlps_dir = self._find_vlps_dir(cap_path, ft)
-                if vlps_dir is None:
-                    continue
-                for entry in self._safe_iterdir(vlps_dir):
-                    if entry.is_dir():
-                        leagues.add(entry.name)
+                if vlps_dir is not None:
+                    for entry in self._safe_iterdir(vlps_dir):
+                        if entry.is_dir():
+                            leagues.add(entry.name)
+                else:
+                    # Fallback: extraer liga del nombre del archivo (*_{LIGA}.ext).
+                    # Patrón HEADWEAR: Q3_FA25-ON CAMPUS_MLB.pdf
+                    exts = _VLPS_EXTENSIONS.get(ft, frozenset())
+                    for f in self._safe_iterdir(cap_path):
+                        if f.is_file() and f.suffix.lower() in exts:
+                            parts = f.stem.rsplit("_", 1)
+                            if len(parts) >= 2:
+                                leagues.add(parts[-1])
         for cs in scope.get("classics", []) or []:
             cat = cs.get("category")
             classic_type = cs.get("classic_type")
             subs = cs.get("subproducts") or []
             if not cat or not classic_type or not subs:
                 continue
+            classic_base = self._find_classic_base_dir(self._category_to_path(cat))
+            if classic_base is None:
+                continue
             for sub in subs:
-                ct_path = self._category_to_path(cat) / "_CLASSIC" / classic_type
+                ct_path = classic_base / classic_type
                 if not ct_path.is_dir():
                     continue
                 target_path = ct_path if sub == CLASSIC_DIRECT_KEY else ct_path / sub
@@ -1455,11 +1566,20 @@ class SmbCatalogSource(CatalogSource):
                     continue
                 for ft in file_types:
                     vlps_dir = self._find_vlps_dir(target_path, ft)
-                    if vlps_dir is None:
-                        continue
-                    for entry in self._safe_iterdir(vlps_dir):
-                        if entry.is_dir():
-                            leagues.add(entry.name)
+                    if vlps_dir is not None:
+                        for entry in self._safe_iterdir(vlps_dir):
+                            if entry.is_dir():
+                                leagues.add(entry.name)
+                    else:
+                        # Fallback: subdirs de liga directamente en target_path.
+                        # Patrón HEADWEAR _CLASSICS: _CLASSICS/CLASSIC LOGO·/MLB/[files]
+                        exts = _VLPS_EXTENSIONS.get(ft, frozenset())
+                        for entry in self._safe_iterdir(target_path):
+                            if not entry.is_dir() or entry.name.startswith("_"):
+                                continue
+                            if any(f.is_file() and f.suffix.lower() in exts
+                                   for f in self._safe_iterdir(entry)):
+                                leagues.add(entry.name)
         return sorted(leagues)
 
     def fetch_vlps_files(self, refs: list[VlpsFileRef]) -> list[bytes]:

@@ -578,7 +578,22 @@ async function apiFetch(path, opts = {}) {
     let detail = `HTTP ${response.status}`;
     try {
       const body = await response.json();
-      if (body.detail) detail = body.detail;
+      if (body.detail) {
+        // FastAPI 422 devuelve `detail` como array de objetos de validación
+        // (no string). Sin esto se mostraba "[object Object]". Lo formateamos
+        // a un mensaje legible: "campo: mensaje; campo2: mensaje2".
+        if (typeof body.detail === 'string') {
+          detail = body.detail;
+        } else if (Array.isArray(body.detail)) {
+          detail = body.detail
+            .map(d => d && d.msg
+              ? `${Array.isArray(d.loc) ? d.loc.join('.') + ': ' : ''}${d.msg}`
+              : JSON.stringify(d))
+            .join('; ');
+        } else {
+          detail = JSON.stringify(body.detail);
+        }
+      }
     } catch (_) { /* respuesta no es JSON, dejamos el HTTP status */ }
     throw new ApiError(detail, response.status);
   }

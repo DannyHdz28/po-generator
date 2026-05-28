@@ -883,7 +883,8 @@ class VlpsLeaguesRequest(BaseModel):
     bajo el folder VLPS, no bajo _MERCHBOARDS.
     """
     year: str
-    quarter: str
+    # quarter opcional — ver nota en GatherVlpsRequest (classics sin quarter).
+    quarter: str | None = None
     scope: AdvancedScopeIn
     file_types: list[str] = ["ppt", "pdf"]
 
@@ -1396,7 +1397,9 @@ class GatherVlpsRequest(BaseModel):
     Sin selector de team — los archivos VLPS están agrupados por liga, no team.
     """
     year: str
-    quarter: str
+    # quarter opcional: los classics se resuelven por _CLASSICS/... sin quarter
+    # (ej. HEADWEAR classics → "Período: 2026" sin Q). None/"" es válido.
+    quarter: str | None = None
     leagues: list[str]                    # ej: ["NFL", "NBA"]
     scope: AdvancedScopeIn
     file_types: list[str] = ["ppt", "pdf"]  # default: ambos

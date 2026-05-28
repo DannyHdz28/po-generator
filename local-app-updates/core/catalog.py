@@ -111,8 +111,8 @@ CLASSIC_DIRECT_KEY: str = "_DIRECTO"
 # - "_PDF VLPS"  o "PDF VLPS"  para PDFs.
 # - Archivos pueden estar flat directamente bajo el folder VLPS (sin sub-liga).
 # - O bajo {liga}/ (con subcarpeta por liga, espejo parcial de _MERCHBOARDS).
-VLPS_PPT_PATTERNS: tuple[str, ...] = ("_PPTX VLPS", "PPTX VLPS")
-VLPS_PDF_PATTERNS: tuple[str, ...] = ("_PDF VLPS", "PDF VLPS")
+VLPS_PPT_PATTERNS: tuple[str, ...] = ("_PPTX VLPS", "PPTX VLPS", "_PPT VLPs", "PPT VLPs")
+VLPS_PDF_PATTERNS: tuple[str, ...] = ("_PDF VLPS", "PDF VLPS", "_PDF VLPs", "PDF VLPs")
 VLPS_FILE_TYPES: tuple[str, ...] = ("ppt", "pdf")
 # Extensiones aceptadas por tipo. .ppt incluido por compat con archivos legacy.
 _VLPS_EXTENSIONS: dict[str, frozenset[str]] = {
@@ -1349,7 +1349,9 @@ class SmbCatalogSource(CatalogSource):
             if candidate.is_dir():
                 return candidate
         # Fallback flexible.
-        discriminator = "PPTX" if file_type == "ppt" else "PDF"
+        # Discriminador "PPT" (no "PPTX") para cubrir tanto "PPTX VLPS" como
+        # "PPT VLPs" (HEADWEAR usa "PPT" sin X). "PPT" está contenido en ambos.
+        discriminator = "PPT" if file_type == "ppt" else "PDF"
         for d in self._safe_iterdir(cap_path):
             if not d.is_dir():
                 continue

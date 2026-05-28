@@ -1374,13 +1374,13 @@ class SmbCatalogSource(CatalogSource):
         Si en el futuro aparece esa estructura, agregamos recursión opcional.
         """
         exts = _VLPS_EXTENSIONS.get(file_type, frozenset())
-        # Normalize leagues para case-insensitive matching (defensive).
         league_set_upper = {l.upper() for l in leagues}
+        include_all = not leagues  # leagues=[] → sin filtro, incluir todo
         out: list[VlpsFileRef] = []
 
         for entry in self._safe_iterdir(vlps_dir):
             if entry.is_dir():
-                if entry.name.upper() in league_set_upper:
+                if include_all or entry.name.upper() in league_set_upper:
                     # Liga seleccionada — listar files adentro.
                     for f in self._safe_iterdir(entry):
                         if f.is_file() and f.suffix.lower() in exts:
@@ -1417,6 +1417,7 @@ class SmbCatalogSource(CatalogSource):
         """
         exts = _VLPS_EXTENSIONS.get(file_type, frozenset())
         league_set_upper = {l.upper() for l in leagues}
+        include_all = not leagues  # leagues=[] → sin filtro, incluir todo
         out: list[VlpsFileRef] = []
         for f in self._safe_iterdir(cap_path):
             if not f.is_file() or f.suffix.lower() not in exts:
@@ -1425,7 +1426,7 @@ class SmbCatalogSource(CatalogSource):
             if len(parts) < 2:
                 continue
             league = parts[-1]
-            if league.upper() in league_set_upper:
+            if include_all or league.upper() in league_set_upper:
                 out.append(VlpsFileRef(
                     key=str(f),
                     filename=f.name,

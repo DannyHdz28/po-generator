@@ -22,6 +22,10 @@ const state = {
   outputMode: 'existing',
   // G.2: filtro de tipos para VLPS. Subset de ['ppt', 'pdf']; vacío = error.
   vlpsFileTypes: ['ppt', 'pdf'],
+  // true cuando el servidor devuelve 0 ligas para el scope actual (ej. HEADWEAR
+  // sin estructura _PPTX VLPS/). En ese caso la liga no es requerida y se
+  // descargan todos los archivos disponibles en las cápsulas.
+  vlpsNoLeaguesAvailable: false,
   // D.2: origen de las imágenes (ortogonal a outputMode y selection.mode).
   //   'server' — fetch del catálogo SMB (flujo histórico).
   //   'manual' — usuario sube los merchboards directamente.
@@ -1038,8 +1042,12 @@ async function loadAdvLeaguesScoped() {
       });
       const { leagues } = await r.json();
       if (!isCurrent()) return;
+      // Si no hay ligas disponibles en el scope, marcar el flag para que
+      // la validación no las exija (ej. HEADWEAR no usa _PPTX VLPS/{liga}/).
+      state.vlpsNoLeaguesAvailable = leagues.length === 0;
       advLeagues.setOptions(leagues.map(l => ({ value: l, label: l })));
       advLeagues.setDisabled(leagues.length === 0);
+      refreshNext2Button();
     } catch (e) {
       if (e.name === 'AbortError') throw e;
       showApiError(`No se pudieron cargar las ligas (scoped): ${e.message}`);
@@ -1825,7 +1833,9 @@ function refreshNext2Button() {
   if (state.outputMode === 'vlps') {
     const adv = state.selection.adv;
     const hasScope = (adv.capsules.length + adv.classics.length) > 0;
-    const hasLeagues = adv.leagues.length > 0;
+    // Liga requerida solo si hay ligas disponibles. Si el servidor devolvió 0
+    // ligas (ej. HEADWEAR sin _PPTX VLPS/), se descarga todo sin filtrar por liga.
+    const hasLeagues = adv.leagues.length > 0 || state.vlpsNoLeaguesAvailable;
     const hasFileTypes = state.vlpsFileTypes.length > 0;
     el.btnNext2.disabled = !(hasScope && hasLeagues && hasFileTypes);
     renderVlpsStatus();
@@ -1869,7 +1879,8 @@ function renderVlpsStatus() {
   const nClassics = adv.classics.length;
   const hasScope = (nCapsules + nClassics) > 0;
   const nLeagues = adv.leagues.length;
-  const hasLeagues = nLeagues > 0;
+  const noLeaguesAvailable = state.vlpsNoLeaguesAvailable;
+  const hasLeagues = nLeagues > 0 || noLeaguesAvailable;
   const hasFileTypes = state.vlpsFileTypes.length > 0;
 
   el.vlpsStatus.hidden = false;
@@ -1888,10 +1899,13 @@ function renderVlpsStatus() {
     const typesLabel = state.vlpsFileTypes.length === 2
       ? 'PPT + PDF'
       : (state.vlpsFileTypes[0] === 'ppt' ? 'Solo PPT' : 'Solo PDF');
+    const ligasLabel = noLeaguesAvailable
+      ? 'Todos los archivos'
+      : `<strong>${nLeagues}</strong> liga${nLeagues === 1 ? '' : 's'}`;
     el.vlpsStatus.innerHTML =
       `<div class="vlps-status-title">✓ Listo para descargar</div>` +
       `<div class="vlps-status-detail">` +
-      `${scopeParts.join(' · ')} · <strong>${nLeagues}</strong> liga${nLeagues === 1 ? '' : 's'} · ${typesLabel}` +
+      `${scopeParts.join(' · ')} · ${ligasLabel} · ${typesLabel}` +
       `</div>`;
     return;
   }

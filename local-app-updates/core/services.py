@@ -279,6 +279,164 @@ def _scan_team_routed(
     return catalog.scan_team_scoped(year, quarter, scope, league, team)
 
 
+def _append_slides_from(source_prs: "Presentation", target_prs: "Presentation") -> None:  # noqa: F821
+    """Copia todos los slides de source_prs al final de target_prs.
+
+    Maneja el remapeo de relaciones de imágenes (rId) para que las imágenes
+    incrustadas en source_prs queden correctamente referenciadas en target_prs.
+    Usado por _generate_batch_concat para armar un único PPTX multi-equipo.
+    """
+    import copy
+    r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    rid_attr = f"{{{r_ns}}}id"
+
+    for source_slide in source_prs.slides:
+        # Buscar layout equivalente en target por nombre; fallback al primero.
+        src_layout_name = source_slide.slide_layout.name
+        target_layout = target_prs.slide_layouts[0]
+        for tl in target_prs.slide_layouts:
+            if tl.name == src_layout_name:
+                target_layout = tl
+                break
+
+        new_slide = target_prs.slides.add_slide(target_layout)
+
+        # Copiar relaciones de imagen y construir el mapa rId_old → rId_new.
+        rId_map: dict[str, str] = {}
+        for rId, rel in source_slide.part.rels.items():
+            if not rel.is_external and "image" in rel.reltype:
+                new_rId = new_slide.part.relate_to(rel.target_part, rel.reltype)
+                rId_map[rId] = new_rId
+
+        # Reemplazar el árbol de shapes de new_slide con el de source_slide.
+        source_sp_tree = source_slide.shapes._spTree
+        target_sp_tree = new_slide.shapes._spTree
+        for child in list(target_sp_tree):
+            target_sp_tree.remove(child)
+
+        for elem in source_sp_tree:
+            elem_copy = copy.deepcopy(elem)
+            for el in elem_copy.iter():
+                if rid_attr in el.attrib and el.attrib[rid_attr] in rId_map:
+                    el.attrib[rid_attr] = rId_map[el.attrib[rid_attr]]
+            target_sp_tree.append(elem_copy)
+
+
+def _generate_batch_concat(
+    catalog: "CatalogSource",  # noqa: F821
+    ppt_input: "PptInput",  # noqa: F821
+    ppt_base_name: str,
+    year: str,
+    quarter: str,
+    selections: list["TeamSelection"],  # noqa: F821
+    scope: dict | None,
+    progress_callback: "ProgressCallback | None",  # noqa: F821
+) -> "tuple[BatchOutput, Iterator[bytes]]":  # noqa: F821
+    """Concat mode para PPT existente (multi_team_mode='concat').
+
+    Genera un deck completo por equipo (usando el template con notas) y
+    concatena todos los slides en UN solo .pptx:
+
+        [Equipo 1 slides] + [Equipo 2 slides] + ... → 1 archivo .pptx
+
+    A diferencia de 'mixed' (que mezcla imágenes en los mismos slides),
+    aquí cada equipo tiene sus propias copias de los slides del template,
+    con sus propias imágenes. Output: 1 PPTX (no ZIP).
+    """
+    import io
+    from pptx import Presentation as _Presentation
+
+    t_batch = time.monotonic()
+    per_team_results: list[TeamGenerateResult] = []
+    merged_prs: _Presentation | None = None
+
+    for idx, sel in enumerate(selections, start=1):
+        t_team = time.monotonic()
+        if progress_callback:
+            progress_callback(
+                current_team=sel.team,
+                current_team_index=idx,
+                current_phase="scan",
+            )
+        try:
+            scan = _scan_team_routed(
+                catalog, year, quarter, sel.league, sel.team, scope,
+            )
+            if progress_callback:
+                progress_callback(current_phase="fetch")
+            team_bytes, result = generate_one_deck(
+                catalog, ppt_input, scan,
+            )
+            team_prs = _Presentation(io.BytesIO(team_bytes))
+
+            if merged_prs is None:
+                merged_prs = team_prs
+            else:
+                if progress_callback:
+                    progress_callback(current_phase="pptx")
+                _append_slides_from(team_prs, merged_prs)
+
+            team_duration = round(time.monotonic() - t_team, 2)
+            per_team_results.append(TeamGenerateResult(
+                team=sel.team,
+                league=sel.league,
+                success=True,
+                replaced_count=result.replaced_count,
+                log=result.log,
+            ))
+            if progress_callback:
+                progress_callback(
+                    teams_done=idx,
+                    append_team_result={
+                        "team": sel.team,
+                        "league": sel.league,
+                        "success": True,
+                        "replaced_count": result.replaced_count,
+                        "duration_seconds": team_duration,
+                    },
+                )
+        except Exception as e:
+            team_duration = round(time.monotonic() - t_team, 2)
+            per_team_results.append(TeamGenerateResult(
+                team=sel.team,
+                league=sel.league,
+                success=False,
+                replaced_count=0,
+                log=[],
+                error=str(e),
+            ))
+            if progress_callback:
+                progress_callback(
+                    teams_done=idx,
+                    append_team_result={
+                        "team": sel.team,
+                        "league": sel.league,
+                        "success": False,
+                        "replaced_count": 0,
+                        "duration_seconds": team_duration,
+                        "error": str(e),
+                    },
+                )
+
+    if merged_prs is None:
+        raise ValueError("Ningún equipo generó un deck válido para concatenar.")
+
+    if progress_callback:
+        progress_callback(current_phase="pptx", current_team="CONCAT")
+
+    out = io.BytesIO()
+    merged_prs.save(out)
+    pptx_bytes = out.getvalue()
+
+    output = BatchOutput(
+        filename=f"{ppt_base_name} — MULTI.pptx",
+        media_type=PPTX_MIME,
+        is_zip=False,
+        per_team=per_team_results,
+    )
+    return output, _stream_bytes(pptx_bytes)
+
+
 def generate_batch(
     catalog: CatalogSource,
     ppt_input: PptInput,
@@ -326,10 +484,10 @@ def generate_batch(
         raise ValueError(
             f"Máximo {MAX_SELECTIONS} selecciones por batch. Recibido: {len(selections)}"
         )
-    if multi_team_mode not in ("strict", "mixed", "per_team"):
+    if multi_team_mode not in ("strict", "mixed", "per_team", "concat"):
         raise ValueError(
             f"multi_team_mode inválido: {multi_team_mode!r} "
-            f"(esperaba 'strict', 'mixed' o 'per_team')"
+            f"(esperaba 'strict', 'mixed', 'per_team' o 'concat')"
         )
 
     # ── SINGLE TEAM ──
@@ -389,6 +547,11 @@ def generate_batch(
         )
     if multi_team_mode == "mixed":
         return _generate_batch_mixed(
+            catalog, ppt_input, ppt_base_name, year, quarter,
+            selections, scope, progress_callback,
+        )
+    if multi_team_mode == "concat":
+        return _generate_batch_concat(
             catalog, ppt_input, ppt_base_name, year, quarter,
             selections, scope, progress_callback,
         )

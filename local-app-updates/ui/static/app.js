@@ -2833,7 +2833,10 @@ async function doGenerate() {
         form.append('scope', JSON.stringify(buildScope()));
       }
       // D.5a: el modo multi-team también se manda al backend en server.
-      form.append('multi_team_mode', state.multiTeamMode);
+      // En PPT existente "Combinar en un deck" = concat (secciones por equipo
+      // en un solo archivo). En PPT nuevo = mixed (imágenes mezcladas).
+      const multiMode = (!isBlank && state.multiTeamMode === 'mixed') ? 'concat' : state.multiTeamMode;
+      form.append('multi_team_mode', multiMode);
 
       // Mensaje inicial del status — refleja qué está pasando.
       if (isBlank) {

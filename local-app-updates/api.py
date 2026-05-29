@@ -1031,12 +1031,12 @@ async def api_generate(
         )
 
     # ── Validación de multi_team_mode (D.5a) ──
-    if multi_team_mode not in ("strict", "mixed", "per_team"):
+    if multi_team_mode not in ("strict", "mixed", "per_team", "concat"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"multi_team_mode inválido: {multi_team_mode!r} "
-                f"(esperaba 'strict', 'mixed' o 'per_team')"
+                f"(esperaba 'strict', 'mixed', 'per_team' o 'concat')"
             ),
         )
 

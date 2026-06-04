@@ -1,142 +1,118 @@
-import asyncio
+import psycopg2
+import pandas as pd
 import os
 import tempfile
-from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
-PBI_URL = "https://reports.maximaapparel.com/reports/powerbi/RESOURCES/Style%20UPC%20Report"
-USERNAME = "daniela.hernandez@maximaapparel.com"
-PASSWORD = "Aez1234!1"
-WIN_USERNAME = "daniela.hernandez"
+DB_HOST = "db.maximaapparel.com"
+DB_PORT = 5432
+DB_NAME = "postgres"
+DB_USER = "agent_ro"
+DB_PASSWORD = "R3@d1234!1"
 
+SIZES = ["2T", "3T", "4", "4T", "5", "6", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
 
-async def _login(page, username, password):
-    try:
-        await page.wait_for_selector('input[type="email"]', timeout=15000)
-        await page.fill('input[type="email"]', username)
-        await page.click('input[type="submit"]')
-        await page.wait_for_selector('input[type="password"]', timeout=15000)
-        await page.fill('input[type="password"]', password)
-        await page.click('input[type="submit"]')
-        try:
-            await page.wait_for_selector('input[type="submit"]', timeout=8000)
-            await page.click('input[type="submit"]')
-        except PWTimeout:
-            pass
-    except PWTimeout:
-        pass
+TABLES_TO_TRY = ["plm.style_info", "mat_view.plm_style_info"]
 
 
-async def download_all_sizes(progress_fn=None):
-    download_dir = tempfile.mkdtemp(prefix="upcs_")
+def get_columns(conn, table):
+    schema, tname = table.split(".")
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+        ORDER BY ordinal_position
+    """, (schema, tname))
+    cols = [r[0] for r in cur.fetchall()]
+    cur.close()
+    return cols
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, args=["--start-maximized"])
-        context = await browser.new_context(
-            accept_downloads=True,
-            viewport={"width": 1920, "height": 1080},
-            http_credentials={"username": WIN_USERNAME, "password": PASSWORD},
-        )
-        page = await context.new_page()
 
-        if progress_fn:
-            progress_fn("Abriendo Power BI...")
-        await page.goto(PBI_URL, timeout=120000)
-
-        if progress_fn:
-            progress_fn("Iniciando sesion...")
-        await _login(page, USERNAME, PASSWORD)
-        await page.wait_for_load_state("networkidle", timeout=120000)
-        await asyncio.sleep(10)
-
-        if progress_fn:
-            progress_fn("Configurando filtro ENTITY = PRO STANDARD US...")
-        try:
-            entity_dropdown = page.locator("text=Todas").first
-            await entity_dropdown.click()
-            await asyncio.sleep(2)
-            pro_std = page.get_by_text("PRO STANDARD US", exact=True).first
-            await pro_std.click()
-            await asyncio.sleep(5)
-        except Exception as e:
-            if progress_fn:
-                progress_fn(f"Filtro ENTITY: {e}")
-
-        if progress_fn:
-            progress_fn("Exportando datos... (puede tardar 2-3 minutos)")
-
-        files = []
-        try:
-            async with page.expect_download(timeout=300000) as dl_info:
-                # Hover over the visual title to reveal the ... button
-                try:
-                    await page.locator("text=STYLE UPC REPORT").first.hover()
-                    await asyncio.sleep(2)
-                except Exception:
-                    pass
-
-                # Try multiple selectors for the ... (more options) button
-                clicked = False
-                for selector in [
-                    '[aria-label="Más opciones"]',
-                    '[aria-label="More options"]',
-                    '[title="Más opciones"]',
-                    '[title="More options"]',
-                    'button[aria-label*="pciones"]',
-                    'button[aria-label*="ption"]',
-                ]:
-                    try:
-                        btn = page.locator(selector).first
-                        await btn.hover(timeout=3000)
-                        await asyncio.sleep(0.5)
-                        await btn.click(timeout=3000)
-                        await asyncio.sleep(1)
-                        clicked = True
-                        break
-                    except Exception:
-                        continue
-
-                # Try via iframes if page selectors failed
-                if not clicked:
-                    for frame in page.frames:
-                        for selector in ['[aria-label="Más opciones"]', '[aria-label="More options"]']:
-                            try:
-                                btn = frame.locator(selector).first
-                                await btn.click(timeout=3000)
-                                clicked = True
-                                break
-                            except Exception:
-                                continue
-                        if clicked:
-                            break
-
-                if progress_fn:
-                    progress_fn("Buscando opcion Exportar datos...")
-
-                # Click "Exportar datos"
-                await page.get_by_text("Exportar datos").first.click(timeout=10000)
-                await asyncio.sleep(1)
-
-                # Confirm export dialog if appears
-                try:
-                    await page.get_by_role("button", name="Exportar").last.click(timeout=5000)
-                    await asyncio.sleep(1)
-                except Exception:
-                    pass
-
-            download = await dl_info.value
-            file_path = os.path.join(download_dir, "upcs_data.xlsx")
-            await download.save_as(file_path)
-            files.append(file_path)
-            if progress_fn:
-                progress_fn("Descarga completada.")
-        except Exception as e:
-            if progress_fn:
-                progress_fn(f"Error exportando: {e}")
-
-        await browser.close()
-
-    return files
+def find_col(cols, candidates):
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
 
 
 def run_download(progress_fn=None):
-    return asyncio.run(download_all_sizes(progress_fn))
+    if progress_fn:
+        progress_fn("Conectando a la base de datos...")
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+            user=DB_USER, password=DB_PASSWORD,
+            connect_timeout=15
+        )
+    except Exception as e:
+        if progress_fn:
+            progress_fn(f"ERROR de conexión: {e}")
+        return []
+
+    try:
+        for table in TABLES_TO_TRY:
+            if progress_fn:
+                progress_fn(f"Revisando tabla {table}...")
+
+            cols = get_columns(conn, table)
+            if not cols:
+                if progress_fn:
+                    progress_fn(f"Tabla {table} no existe o sin permisos.")
+                continue
+
+            if progress_fn:
+                progress_fn(f"Columnas en {table}: {', '.join(cols)}")
+
+            # Buscar columnas necesarias
+            style_col = find_col(cols, ["ivnum", "style", "style_number", "style_no", "sku", "ivstyle"])
+            size_col   = find_col(cols, ["size", "talla", "size_code"])
+            upc_col    = find_col(cols, ["upc", "barcode", "upc_code"])
+            desc_col   = find_col(cols, ["description", "descripcion", "desc", "item_description"])
+            ws_col     = find_col(cols, ["wholesale", "cost", "unit_cost", "ws", "wholesale_price"])
+            msrp_col   = find_col(cols, ["msrp", "retail", "retail_price", "srp"])
+
+            if not style_col or not upc_col:
+                if progress_fn:
+                    progress_fn(f"No se encontraron columnas de Style/UPC en {table}. Intentando siguiente tabla...")
+                continue
+
+            select_parts = [f"{style_col} AS style"]
+            if size_col:   select_parts.append(f"{size_col} AS size")
+            if upc_col:    select_parts.append(f"{upc_col} AS upc")
+            if desc_col:   select_parts.append(f"{desc_col} AS description")
+            if ws_col:     select_parts.append(f"{ws_col} AS wholesale")
+            if msrp_col:   select_parts.append(f"{msrp_col} AS msrp")
+
+            size_filter = ""
+            if size_col:
+                placeholders = ",".join(["%s"] * len(SIZES))
+                size_filter = f"WHERE {size_col} IN ({placeholders})"
+
+            query = f"SELECT {', '.join(select_parts)} FROM {table} {size_filter}"
+
+            if progress_fn:
+                progress_fn(f"Jalando datos de {table}...")
+
+            df = pd.read_sql(query, conn, params=SIZES if size_col else None)
+            conn.close()
+
+            if progress_fn:
+                progress_fn(f"Datos obtenidos: {len(df):,} registros de {table}.")
+
+            download_dir = tempfile.mkdtemp(prefix="upcs_")
+            file_path = os.path.join(download_dir, "upcs_data.xlsx")
+            df.to_excel(file_path, index=False)
+            return [file_path]
+
+        conn.close()
+        if progress_fn:
+            progress_fn("ERROR: No se encontraron tablas con columnas de Style y UPC.")
+        return []
+
+    except Exception as e:
+        if progress_fn:
+            progress_fn(f"ERROR al consultar: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return []

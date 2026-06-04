@@ -4,6 +4,7 @@ import io
 from datetime import date
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
+from pbi_downloader import run_download
 
 st.set_page_config(page_title="UPCs Generator", page_icon="🏷️", layout="centered")
 
@@ -24,15 +25,47 @@ st.markdown("---")
 
 SIZES = ["2T", "3T", "4", "4T", "5", "6", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
 
-st.markdown("#### Paso 1 — Descarga el archivo de Power BI")
-st.markdown("""
-<div class="step-box">
-1. Entra a <b>reports.maximaapparel.com</b> → Style UPC Report<br>
-2. Filtra <b>ENTITY = PRO STANDARD US</b><br>
-3. Haz clic en el visual → <b>...</b> → <b>Exportar datos</b><br>
-4. Sube el archivo descargado aquí abajo
-</div>
-""", unsafe_allow_html=True)
+st.markdown("#### Paso 1 — Obtén los datos")
+
+tab_auto, tab_manual = st.tabs(["🔄 Automático (Base de datos)", "📁 Manual (subir archivo)"])
+
+with tab_auto:
+    st.markdown("""
+    <div class="step-box">
+    Conecta directamente a la base de datos de Maxima Apparel y descarga los UPCs automáticamente.
+    </div>
+    """, unsafe_allow_html=True)
+
+    if "db_files" not in st.session_state:
+        st.session_state.db_files = []
+    if "db_log" not in st.session_state:
+        st.session_state.db_log = []
+
+    if st.button("🔌 Conectar y Descargar", use_container_width=True):
+        st.session_state.db_files = []
+        st.session_state.db_log = []
+        log_box = st.empty()
+
+        def progress(msg):
+            st.session_state.db_log.append(msg)
+            log_box.markdown("\n\n".join(f"• {m}" for m in st.session_state.db_log))
+
+        with st.spinner("Conectando..."):
+            files = run_download(progress_fn=progress)
+        st.session_state.db_files = files
+
+    if st.session_state.db_log:
+        with st.expander("Log de conexión", expanded=True):
+            for msg in st.session_state.db_log:
+                color = "#f87171" if "ERROR" in msg.upper() else "#4ade80" if "obtenidos" in msg.lower() else "#ccc"
+                st.markdown(f'<div style="font-size:0.85rem;color:{color};">• {msg}</div>', unsafe_allow_html=True)
+
+with tab_manual:
+    st.markdown("""
+    <div class="step-box">
+    Exporta manualmente desde Power BI y sube el archivo aquí.
+    </div>
+    """, unsafe_allow_html=True)
 
 uploaded = st.file_uploader("Sube el archivo exportado de Power BI", type=["xlsx", "csv"], accept_multiple_files=True)
 
@@ -134,18 +167,31 @@ def build_output_xlsx(upc_df, base):
     return buf.getvalue()
 
 
-if uploaded:
+db_files = st.session_state.get("db_files", [])
+all_sources = list(uploaded) if uploaded else []
+if db_files:
+    all_sources = db_files + all_sources
+
+if all_sources:
     if st.button("GENERAR UPCs", type="primary", use_container_width=True):
         with st.spinner("Procesando..."):
-            base_df = build_base(uploaded)
+            base_df = build_base(all_sources)
 
         if base_df.empty:
             st.error("No se encontraron datos. Verifica que el archivo sea el correcto.")
+            with st.expander("¿Qué columnas detectó el archivo?", expanded=True):
+                for f in uploaded:
+                    try:
+                        df_debug = pd.read_excel(f, header=0, dtype=str, nrows=3)
+                        st.caption(f"**{f.name}** — columnas: {list(df_debug.columns)}")
+                        st.dataframe(df_debug, hide_index=True)
+                    except Exception as e:
+                        st.caption(f"{f.name}: {e}")
         else:
             upc_df = build_upc_sheet(base_df)
             xlsx_bytes = build_output_xlsx(upc_df, base_df)
 
-            st.markdown(f'<div class="success-box">Listo — {len(base_df):,} registros procesados de {len(uploaded)} archivo(s)</div>',
+            st.markdown(f'<div class="success-box">Listo — {len(base_df):,} registros procesados de {len(all_sources)} archivo(s)</div>',
                         unsafe_allow_html=True)
 
             fname = f"UPCS_{file_date.strftime('%m.%d.%Y')}.xlsx"
@@ -157,4 +203,4 @@ if uploaded:
                 use_container_width=True,
             )
 else:
-    st.info("Sube el archivo de Power BI para continuar.")
+    st.info("Conecta a la base de datos o sube un archivo de Power BI para continuar.")

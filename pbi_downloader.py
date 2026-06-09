@@ -1,7 +1,5 @@
 import psycopg2
 import pandas as pd
-import os
-import tempfile
 
 DB_HOST = "db.maximaapparel.com"
 DB_PORT = 5432
@@ -63,10 +61,7 @@ def run_download(progress_fn=None):
         if progress_fn:
             progress_fn(f"Datos obtenidos: {len(df):,} registros.")
 
-        download_dir = tempfile.mkdtemp(prefix="upcs_")
-        file_path = os.path.join(download_dir, "upcs_data.xlsx")
-        df.to_excel(file_path, index=False)
-        return [file_path]
+        return df
 
     except Exception as e:
         if progress_fn:
@@ -75,4 +70,4 @@ def run_download(progress_fn=None):
             conn.close()
         except Exception:
             pass
-        return []
+        return None

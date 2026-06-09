@@ -36,14 +36,15 @@ with tab_auto:
     </div>
     """, unsafe_allow_html=True)
 
-    if "db_files" not in st.session_state:
-        st.session_state.db_files = []
+    if "db_df" not in st.session_state:
+        st.session_state.db_df = None
     if "db_log" not in st.session_state:
         st.session_state.db_log = []
 
     if st.button("🔌 Conectar y Descargar", use_container_width=True):
-        st.session_state.db_files = []
+        st.session_state.db_df = None
         st.session_state.db_log = []
+        st.session_state.pop("output", None)
         log_box = st.empty()
 
         def progress(msg):
@@ -51,8 +52,8 @@ with tab_auto:
             log_box.markdown("\n\n".join(f"• {m}" for m in st.session_state.db_log))
 
         with st.spinner("Conectando..."):
-            files = run_download(progress_fn=progress)
-        st.session_state.db_files = files
+            result = run_download(progress_fn=progress)
+        st.session_state.db_df = result if result is not None and not isinstance(result, list) else None
 
     if st.session_state.db_log:
         with st.expander("Log de conexión", expanded=True):
@@ -71,6 +72,37 @@ uploaded = st.file_uploader("Sube el archivo exportado de Power BI", type=["xlsx
 
 st.markdown("#### Paso 2 — Genera el archivo")
 file_date = st.date_input("Fecha", value=date.today())
+
+
+def build_base_from_df(df):
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    rename = {}
+    for col in df.columns:
+        if col in ("ivstyle", "style", "estilo"):
+            rename[col] = "Style"
+        elif col in ("size", "talla"):
+            rename[col] = "Size"
+        elif col == "upc":
+            rename[col] = "UPC"
+        elif col in ("description", "ivdesc", "descripcion", "descripción"):
+            rename[col] = "DESCRIPTION"
+        elif col in ("wholesale_usd", "wholesale", "mayoreo"):
+            rename[col] = "WHOLESALE"
+        elif col in ("msrp_usd", "msrp"):
+            rename[col] = "MSRP"
+    df = df.rename(columns=rename)
+
+    needed = [c for c in ["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"] if c in df.columns]
+    df = df[needed].copy()
+    df["UPC"] = df["UPC"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    df = df[df["UPC"].str.len() > 3]
+    df = df[df["UPC"].str.lower() != "nan"]
+    if "Size" in df.columns:
+        df = df[df["Size"].astype(str).str.strip().isin(SIZES)]
+    df = df[df["Style"].notna() & (df["Style"].astype(str).str.strip() != "")]
+    df = df.drop_duplicates(subset=["Style", "Size"], keep="first")
+    return df.reset_index(drop=True)
 
 
 def build_base(files):
@@ -167,40 +199,60 @@ def build_output_xlsx(upc_df, base):
     return buf.getvalue()
 
 
-db_files = st.session_state.get("db_files", [])
-all_sources = list(uploaded) if uploaded else []
-if db_files:
-    all_sources = db_files + all_sources
+db_df = st.session_state.get("db_df", None)
+has_data = db_df is not None or (uploaded and len(uploaded) > 0)
 
-if all_sources:
+if has_data:
     if st.button("GENERAR UPCs", type="primary", use_container_width=True):
-        with st.spinner("Procesando..."):
-            base_df = build_base(all_sources)
+        st.session_state.pop("output", None)
+        with st.spinner("Procesando... (puede tardar 1-2 min con muchos datos)"):
+            if db_df is not None:
+                base_df = build_base_from_df(db_df)
+            else:
+                base_df = build_base(list(uploaded) if uploaded else [])
 
         if base_df.empty:
             st.error("No se encontraron datos. Verifica que el archivo sea el correcto.")
-            with st.expander("¿Qué columnas detectó el archivo?", expanded=True):
-                for f in uploaded:
-                    try:
-                        df_debug = pd.read_excel(f, header=0, dtype=str, nrows=3)
-                        st.caption(f"**{f.name}** — columnas: {list(df_debug.columns)}")
-                        st.dataframe(df_debug, hide_index=True)
-                    except Exception as e:
-                        st.caption(f"{f.name}: {e}")
         else:
             upc_df = build_upc_sheet(base_df)
             xlsx_bytes = build_output_xlsx(upc_df, base_df)
-
-            st.markdown(f'<div class="success-box">Listo — {len(base_df):,} registros procesados de {len(all_sources)} archivo(s)</div>',
-                        unsafe_allow_html=True)
-
             fname = f"UPCS_{file_date.strftime('%m.%d.%Y')}.xlsx"
-            st.download_button(
-                label=f"⬇ Descargar {fname}",
-                data=xlsx_bytes,
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+
+            # Guardar directo en disco (confiable aunque sea pesado)
+            out_dir = os.path.join(os.getcwd(), "UPCs_generados")
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, fname)
+            try:
+                with open(out_path, "wb") as fh:
+                    fh.write(xlsx_bytes)
+                saved_path = out_path
+            except Exception:
+                saved_path = None
+
+            st.session_state["output"] = {
+                "fname": fname,
+                "bytes": xlsx_bytes,
+                "count": len(base_df),
+                "path": saved_path,
+            }
+
+# Mostrar resultado (persiste aunque la app se recargue)
+out = st.session_state.get("output")
+if out:
+    st.markdown(
+        f'<div class="success-box">Listo — {out["count"]:,} registros procesados</div>',
+        unsafe_allow_html=True,
+    )
+    if out.get("path"):
+        st.success(f"✅ Guardado automáticamente en:\n\n`{out['path']}`")
+    st.download_button(
+        label=f"⬇ Descargar {out['fname']}",
+        data=out["bytes"],
+        file_name=out["fname"],
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+elif not has_data:
+    st.info("Conecta a la base de datos o sube un archivo de Power BI para continuar.")
 else:
     st.info("Conecta a la base de datos o sube un archivo de Power BI para continuar.")

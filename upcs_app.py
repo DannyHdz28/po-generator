@@ -183,11 +183,19 @@ def build_output_xlsx(upc_df, base):
     for s in styles_list:
         ws_styles.append([s])
 
+    # Hoja UPC con fórmulas vivas: CONCAT une Styles+Size, y los campos
+    # DESCRIPTION/WholeSale/MSRP se jalan de la hoja BASE con VLOOKUP.
     ws_upc = wb.create_sheet("UPC")
-    for row in dataframe_to_rows(upc_df, index=False, header=True):
-        ws_upc.append(row)
-    for cell in ws_upc["D"][1:]:
-        cell.number_format = "@"
+    ws_upc.append(["Styles", "Size", "CONCAT", "UPC", "DESCRIPTION", "WholeSale", "MSRP"])
+    for i, (_, r) in enumerate(upc_df.iterrows(), start=2):
+        ws_upc.cell(row=i, column=1, value=r.get("Styles", ""))
+        ws_upc.cell(row=i, column=2, value=r.get("Size", ""))
+        ws_upc.cell(row=i, column=3, value=f"=_xlfn.CONCAT(A{i},B{i})")
+        cell_upc = ws_upc.cell(row=i, column=4, value=str(r.get("UPC", "")))
+        cell_upc.number_format = "@"
+        ws_upc.cell(row=i, column=5, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,4,0),"N/A")')
+        ws_upc.cell(row=i, column=6, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,5,0),"N/A")')
+        ws_upc.cell(row=i, column=7, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,6,0),"N/A")')
 
     ws_base = wb.create_sheet("BASE")
     for row in dataframe_to_rows(base, index=False, header=True):

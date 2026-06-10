@@ -30,8 +30,8 @@ def run_download(progress_fn=None):
 
         query = f"""
             SELECT
-                ivstyle AS style,
-                ivnum,
+                ivnum AS style,
+                ivstyle AS base_style,
                 size,
                 upc,
                 ivdesc AS description,

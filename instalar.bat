@@ -14,10 +14,7 @@ if errorlevel 1 (
 )
 
 echo Instalando dependencias...
-pip install streamlit pandas openpyxl requests playwright -q
-
-echo Instalando Chrome para automatizacion...
-python -m playwright install chromium
+pip install streamlit pandas openpyxl psycopg2-binary -q
 
 echo.
 echo ============================================

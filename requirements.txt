@@ -6,3 +6,4 @@ xlrd>=2.0.1
 Pillow>=10.0.0
 pdf2image
 pytesseract
+psycopg2-binary>=2.9.0

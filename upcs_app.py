@@ -239,7 +239,7 @@ def build_output_xlsx(upc_df, base):
     for i, (_, r) in enumerate(upc_df.iterrows(), start=2):
         ws_upc.cell(row=i, column=1, value=r.get("Styles", ""))
         ws_upc.cell(row=i, column=2, value=r.get("Size", ""))
-        ws_upc.cell(row=i, column=3, value=f"=_xlfn.CONCAT(A{i},B{i})")
+        ws_upc.cell(row=i, column=3, value=f"=A{i}&B{i}")
         cell_upc = ws_upc.cell(row=i, column=4, value=str(r.get("UPC", "")))
         cell_upc.number_format = "@"
         ws_upc.cell(row=i, column=5, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,4,0),"N/A")')

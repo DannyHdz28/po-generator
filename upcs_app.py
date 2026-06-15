@@ -7,6 +7,7 @@ from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from pbi_downloader import run_download
 
 st.set_page_config(page_title="UPCs Generator", page_icon="🏷️", layout="centered")
@@ -210,8 +211,21 @@ def style_header(ws):
             cell.fill = HEADER_FILL
             cell.font = HEADER_FONT
             cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.auto_filter.ref = ws.dimensions
     ws.freeze_panes = "A2"
+
+
+def add_excel_table(ws, table_name):
+    """Add a real Excel Table so [@ColumnName] structured references work."""
+    max_col = get_column_letter(ws.max_column)
+    max_row = ws.max_row
+    tab = Table(displayName=table_name, ref=f"A1:{max_col}{max_row}")
+    # No built-in style so our custom blue header colours are preserved
+    tab.tableStyleInfo = TableStyleInfo(
+        name="TableStyleLight1",
+        showFirstColumn=False, showLastColumn=False,
+        showRowStripes=False, showColumnStripes=False,
+    )
+    ws.add_table(tab)
 
 
 def autofit(ws):
@@ -232,6 +246,7 @@ def build_output_xlsx(upc_df, base):
         ws_styles.append([s])
     style_header(ws_styles)
     autofit(ws_styles)
+    add_excel_table(ws_styles, "StylesList")
 
     # ── UPC (fórmulas idénticas al manual) ──
     ws_upc = wb.create_sheet("UPC")
@@ -249,12 +264,14 @@ def build_output_xlsx(upc_df, base):
         ws_upc.cell(row=i, column=7).number_format = MONEY_FMT
     style_header(ws_upc)
     autofit(ws_upc)
+    add_excel_table(ws_upc, "UPCData")
 
     # ── BASE ──
     ws_base = wb.create_sheet("BASE")
     for row in dataframe_to_rows(base, index=False, header=True):
         ws_base.append(row)
     style_header(ws_base)
+    add_excel_table(ws_base, "BASEData")
     for cell in ws_base["C"][1:]:
         cell.number_format = "@"
     for row in ws_base.iter_rows(min_row=2, max_row=ws_base.max_row):

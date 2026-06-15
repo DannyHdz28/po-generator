@@ -74,8 +74,16 @@ uploaded = st.file_uploader("Sube el archivo exportado de Power BI", type=["xlsx
 st.markdown("#### Paso 2 — Genera el archivo")
 file_date = st.date_input("Fecha", value=date.today())
 
+BRANDS = ["Pro Standard", "Off White", "LAB"]
+selected_brands = st.multiselect(
+    "Filtrar por marca (vacío = todas las marcas)",
+    options=BRANDS,
+    default=[],
+    placeholder="Selecciona una o más marcas..."
+)
 
-def build_base_from_df(df):
+
+def build_base_from_df(df, brands=None):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
     rename = {}
@@ -92,7 +100,15 @@ def build_base_from_df(df):
             rename[col] = "WHOLESALE"
         elif col in ("msrp_usd", "msrp"):
             rename[col] = "MSRP"
+        elif col in ("brand_name", "reporting_brand_name"):
+            rename[col] = col  # conservar para filtrar
     df = df.rename(columns=rename)
+
+    # Filtro de marca (si se seleccionó alguna)
+    if brands:
+        brand_col = next((c for c in ["brand_name", "reporting_brand_name"] if c in df.columns), None)
+        if brand_col:
+            df = df[df[brand_col].astype(str).str.strip().isin(brands)]
 
     needed = [c for c in ["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"] if c in df.columns]
     df = df[needed].copy()
@@ -216,7 +232,7 @@ if has_data:
         st.session_state.pop("output", None)
         with st.spinner("Procesando... (puede tardar 1-2 min con muchos datos)"):
             if db_df is not None:
-                base_df = build_base_from_df(db_df)
+                base_df = build_base_from_df(db_df, brands=selected_brands)
             else:
                 base_df = build_base(list(uploaded) if uploaded else [])
 

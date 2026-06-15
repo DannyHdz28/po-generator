@@ -74,7 +74,7 @@ uploaded = st.file_uploader("Sube el archivo exportado de Power BI", type=["xlsx
 st.markdown("#### Paso 2 — Genera el archivo")
 file_date = st.date_input("Fecha", value=date.today())
 
-BRANDS = ["Pro Standard", "Off White", "LAB"]
+BRANDS = ["Pro Standard", "Off White / L/AB"]
 selected_brands = st.multiselect(
     "Filtrar por marca (vacío = todas las marcas)",
     options=BRANDS,
@@ -106,9 +106,17 @@ def build_base_from_df(df, brands=None):
 
     # Filtro de marca (si se seleccionó alguna)
     if brands:
-        brand_col = next((c for c in ["brand_name", "reporting_brand_name"] if c in df.columns), None)
-        if brand_col:
-            df = df[df[brand_col].astype(str).str.strip().isin(brands)]
+        # reporting_brand_name: "Pro Standard" agrupa todas las ligas (NBA,NFL,MLB,etc.)
+        # "Off-White Division" agrupa Off-White y L/AB
+        brand_map = {
+            "Pro Standard": ["Pro Standard"],
+            "Off White / L/AB": ["Off-White Division"],
+        }
+        allowed = []
+        for b in brands:
+            allowed.extend(brand_map.get(b, [b]))
+        if "reporting_brand_name" in df.columns:
+            df = df[df["reporting_brand_name"].astype(str).str.strip().isin(allowed)]
 
     needed = [c for c in ["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"] if c in df.columns]
     df = df[needed].copy()

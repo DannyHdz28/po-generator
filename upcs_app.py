@@ -5,6 +5,8 @@ import os
 from datetime import date
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.utils import get_column_letter
 from pbi_downloader import run_download
 
 st.set_page_config(page_title="UPCs Generator", page_icon="🏷️", layout="centered")
@@ -197,18 +199,41 @@ def build_upc_sheet(base):
     return pd.DataFrame(rows, columns=["Styles", "Size", "CONCAT", "UPC", "DESCRIPTION", "WholeSale", "MSRP"])
 
 
+HEADER_FILL = PatternFill("solid", fgColor="006699")
+HEADER_FONT = Font(bold=True, color="FFFFFF")
+MONEY_FMT   = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
+
+
+def style_header(ws):
+    for cell in ws[1]:
+        if cell.value is not None:
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A2"
+
+
+def autofit(ws):
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=0)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(max_len + 2, 10), 50)
+
+
 def build_output_xlsx(upc_df, base):
     wb = Workbook()
     styles_list = sorted(base["Style"].dropna().unique().tolist())
 
+    # ── Styles ──
     ws_styles = wb.active
     ws_styles.title = "Styles"
     ws_styles.append(["Styles"])
     for s in styles_list:
         ws_styles.append([s])
+    style_header(ws_styles)
+    autofit(ws_styles)
 
-    # Hoja UPC con fórmulas vivas: CONCAT une Styles+Size, y los campos
-    # DESCRIPTION/WholeSale/MSRP se jalan de la hoja BASE con VLOOKUP.
+    # ── UPC (fórmulas idénticas al manual) ──
     ws_upc = wb.create_sheet("UPC")
     ws_upc.append(["Styles", "Size", "CONCAT", "UPC", "DESCRIPTION", "WholeSale", "MSRP"])
     for i, (_, r) in enumerate(upc_df.iterrows(), start=2):
@@ -219,13 +244,24 @@ def build_output_xlsx(upc_df, base):
         cell_upc.number_format = "@"
         ws_upc.cell(row=i, column=5, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,4,0),"N/A")')
         ws_upc.cell(row=i, column=6, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,5,0),"N/A")')
+        ws_upc.cell(row=i, column=6).number_format = MONEY_FMT
         ws_upc.cell(row=i, column=7, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,6,0),"N/A")')
+        ws_upc.cell(row=i, column=7).number_format = MONEY_FMT
+    style_header(ws_upc)
+    autofit(ws_upc)
 
+    # ── BASE ──
     ws_base = wb.create_sheet("BASE")
     for row in dataframe_to_rows(base, index=False, header=True):
         ws_base.append(row)
+    style_header(ws_base)
     for cell in ws_base["C"][1:]:
         cell.number_format = "@"
+    for row in ws_base.iter_rows(min_row=2, max_row=ws_base.max_row):
+        for cell in row:
+            if cell.column in (5, 6):
+                cell.number_format = MONEY_FMT
+    autofit(ws_base)
 
     buf = io.BytesIO()
     wb.save(buf)

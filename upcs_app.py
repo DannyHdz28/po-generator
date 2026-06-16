@@ -2,8 +2,12 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+import re
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import date
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from pbi_downloader import run_download
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template_upcs.xlsx")
@@ -173,67 +177,158 @@ def build_base_from_files(files):
     return base.reset_index(drop=True)
 
 
+def _sheet_xml_path(zf, sheet_name):
+    """Devuelve el path interno (xl/worksheets/sheetN.xml) para un nombre de hoja."""
+    NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    R  = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    wb_root = ET.fromstring(zf.read('xl/workbook.xml'))
+    rid = next(
+        (s.get(f'{{{R}}}id') for s in wb_root.iter(f'{{{NS}}}sheet')
+         if s.get('name') == sheet_name), None)
+    if not rid:
+        raise ValueError(f"Hoja '{sheet_name}' no encontrada en el workbook.")
+    rels = ET.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+    target = next((r.get('Target') for r in rels if r.get('Id') == rid), None)
+    if not target:
+        raise ValueError(f"No se encontró el archivo para la hoja '{sheet_name}'.")
+    return 'xl/' + target
+
+
 def fill_template_base(base_df):
-    """Abre el template, llena la hoja BASE con los datos, devuelve bytes."""
+    """
+    Llena la hoja BASE del template con los datos del DataFrame.
+
+    Usa openpyxl para escribir los datos y zipfile para restaurar
+    los archivos internos (queryTables, rels) que openpyxl elimina
+    al guardar, evitando el error 'Removed Records: Formula from sheet3.xml'.
+    """
     if not os.path.exists(TEMPLATE_PATH):
         raise FileNotFoundError(
-            f"No se encontró el archivo template_upcs.xlsx en:\n{TEMPLATE_PATH}\n"
-            "Coloca el archivo en la misma carpeta que upcs_app.py."
+            f"No se encontró template_upcs.xlsx en:\n{TEMPLATE_PATH}\n"
+            "Colócalo en la misma carpeta que upcs_app.py."
         )
-
-    wb = load_workbook(TEMPLATE_PATH)
-
-    if "BASE" not in wb.sheetnames:
-        raise ValueError("El template no tiene una hoja llamada 'BASE'.")
-
-    ws = wb["BASE"]
-
-    # Leer encabezados del template para mapear columnas correctamente
-    template_headers = {}
-    for cell in ws[1]:
-        if cell.value:
-            template_headers[str(cell.value).strip().upper()] = cell.column
-
-    # Borrar datos existentes (conservar encabezados)
-    if ws.max_row > 1:
-        ws.delete_rows(2, ws.max_row - 1)
-
-    # Mapa: nombre columna DataFrame → posibles nombres en el template
-    col_map = {
-        "Style":       ["STYLE"],
-        "Size":        ["SIZE"],
-        "UPC":         ["UPC"],
-        "DESCRIPTION": ["DESCRIPTION"],
-        "WHOLESALE":   ["WHOLESALE", "WHOLESAL"],
-        "MSRP":        ["MSRP"],
-    }
-
-    # Construir mapa final: df_column → column_index en template
-    fill_map = {}
-    for df_col, template_names in col_map.items():
-        for t_name in template_names:
-            if t_name in template_headers:
-                fill_map[df_col] = template_headers[t_name]
-                break
 
     MONEY_FMT = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
 
+    # ── 1. Llenar datos con openpyxl ─────────────────────────────────────
+    wb = load_workbook(TEMPLATE_PATH)
+    if "BASE" not in wb.sheetnames:
+        raise ValueError("El template no tiene hoja 'BASE'.")
+    ws = wb["BASE"]
+
+    # Leer encabezados
+    headers = {}
+    for cell in ws[1]:
+        if cell.value:
+            headers[str(cell.value).strip().upper()] = cell.column
+
+    # Borrar filas de datos (conservar encabezado)
+    if ws.max_row > 1:
+        ws.delete_rows(2, ws.max_row - 1)
+
+    # Mapeo de columnas
+    col_aliases = {
+        "Style": ["STYLE"], "Size": ["SIZE"], "UPC": ["UPC"],
+        "DESCRIPTION": ["DESCRIPTION"],
+        "WHOLESALE": ["WHOLESALE", "WHOLESAL"], "MSRP": ["MSRP"],
+    }
+    fill_map = {}
+    for df_col, names in col_aliases.items():
+        for n in names:
+            if n in headers:
+                fill_map[df_col] = headers[n]
+                break
+
+    # Escribir datos
     for r_idx, (_, row) in enumerate(base_df.iterrows(), start=2):
         for df_col, col_idx in fill_map.items():
             if df_col not in base_df.columns:
                 continue
             value = row[df_col]
-            if pd.isna(value):
-                value = None
+            try:
+                if pd.isna(value):
+                    value = None
+            except (TypeError, ValueError):
+                pass
             cell = ws.cell(row=r_idx, column=col_idx, value=value)
             if df_col == "UPC":
                 cell.number_format = "@"
             elif df_col in ("WHOLESALE", "MSRP"):
                 cell.number_format = MONEY_FMT
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+    # Actualizar ref de tablas Excel si existen (evita rango obsoleto)
+    for tbl in ws.tables.values():
+        tbl.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+
+    pl_buf = io.BytesIO()
+    wb.save(pl_buf)
+    pl_buf.seek(0)
+
+    # ── 2. Recolectar lo que openpyxl pudo haber eliminado del template ──
+    with zipfile.ZipFile(TEMPLATE_PATH, 'r') as tmpl:
+        tmpl_names = set(tmpl.namelist())
+        base_path_tmpl = _sheet_xml_path(tmpl, 'BASE')
+        base_file_tmpl = base_path_tmpl.split('/')[-1]
+        rels_path_tmpl = f'xl/worksheets/_rels/{base_file_tmpl}.rels'
+
+        to_restore = {}
+        if rels_path_tmpl in tmpl_names:
+            to_restore[rels_path_tmpl] = tmpl.read(rels_path_tmpl)
+        for f in tmpl_names:
+            if re.search(r'queryTable', f, re.IGNORECASE):
+                to_restore[f] = tmpl.read(f)
+
+        # Bloque <queryTableParts> de la hoja BASE original
+        orig_xml = tmpl.read(base_path_tmpl).decode('utf-8')
+        qt_match = re.search(
+            r'<queryTableParts\b(?:[^>]*/?>|.*?</queryTableParts>)',
+            orig_xml, re.DOTALL)
+        qt_block = qt_match.group(0) if qt_match else None
+
+        # Entradas de Content_Types para queryTable
+        ct_orig = tmpl.read('[Content_Types].xml').decode('utf-8')
+        qt_ct = re.findall(r'<(?:Override|Default)[^>]+[Qq]uery[^>]+/>', ct_orig)
+
+    # ── 3. Reconstruir zip con archivos restaurados ───────────────────────
+    output_buf = io.BytesIO()
+    with zipfile.ZipFile(pl_buf, 'r') as pl:
+        pl_names = set(pl.namelist())
+        new_base_path = _sheet_xml_path(pl, 'BASE')
+        new_base_file = new_base_path.split('/')[-1]
+        new_rels_path = f'xl/worksheets/_rels/{new_base_file}.rels'
+
+        with zipfile.ZipFile(output_buf, 'w', zipfile.ZIP_DEFLATED) as out:
+            for item in pl.namelist():
+                data = pl.read(item)
+
+                # Re-inyectar <queryTableParts> en la hoja BASE
+                if item == new_base_path and qt_block:
+                    s = data.decode('utf-8')
+                    if '<queryTableParts' not in s:
+                        s = s.replace('</worksheet>', f'{qt_block}</worksheet>')
+                    data = s.encode('utf-8')
+
+                # Añadir entradas de Content_Types para queryTable
+                if item == '[Content_Types].xml' and qt_ct:
+                    s = data.decode('utf-8')
+                    for entry in qt_ct:
+                        if entry not in s:
+                            s = s.replace('</Types>', f'{entry}</Types>')
+                    data = s.encode('utf-8')
+
+                out.writestr(item, data)
+
+            # Restaurar archivos que openpyxl eliminó
+            for path, content in to_restore.items():
+                mapped = path.replace(
+                    f'_rels/{base_file_tmpl}.rels',
+                    f'_rels/{new_base_file}.rels'
+                )
+                if mapped not in pl_names:
+                    out.writestr(mapped, content)
+
+    output_buf.seek(0)
+    return output_buf.getvalue()
 
 
 db_df = st.session_state.get("db_df", None)

@@ -271,7 +271,7 @@ def build_output_xlsx(upc_df, base):
     for row in dataframe_to_rows(base, index=False, header=True):
         ws_base.append(row)
     style_header(ws_base)
-    add_excel_table(ws_base, "BASEData")
+    ws_base.auto_filter.ref = ws_base.dimensions
     for cell in ws_base["C"][1:]:
         cell.number_format = "@"
     for row in ws_base.iter_rows(min_row=2, max_row=ws_base.max_row):

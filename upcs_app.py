@@ -3,12 +3,11 @@ import pandas as pd
 import io
 import os
 from datetime import date
-from openpyxl import Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import PatternFill, Font, Alignment
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl import load_workbook
 from pbi_downloader import run_download
+
+TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template_upcs.xlsx")
+SIZES = ["2T", "3T", "4", "4T", "5", "6", "6X", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
 
 st.set_page_config(page_title="UPCs Generator", page_icon="🏷️", layout="centered")
 
@@ -26,8 +25,6 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
 st.markdown('<div class="main-title">UPCs GENERATOR</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">MAXIMA APPAREL</div>', unsafe_allow_html=True)
 st.markdown("---")
-
-SIZES = ["2T", "3T", "4", "4T", "5", "6", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
 
 st.markdown("#### Paso 1 — Obtén los datos")
 
@@ -104,13 +101,10 @@ def build_base_from_df(df, brands=None):
         elif col in ("msrp_usd", "msrp"):
             rename[col] = "MSRP"
         elif col in ("brand_name", "reporting_brand_name"):
-            rename[col] = col  # conservar para filtrar
+            rename[col] = col
     df = df.rename(columns=rename)
 
-    # Filtro de marca (si se seleccionó alguna)
     if brands:
-        # reporting_brand_name: "Pro Standard" agrupa todas las ligas (NBA,NFL,MLB,etc.)
-        # "Off-White Division" agrupa Off-White y L/AB
         brand_map = {
             "Pro Standard": ["Pro Standard"],
             "Off White / L/AB": ["Off-White Division"],
@@ -133,14 +127,13 @@ def build_base_from_df(df, brands=None):
     return df.reset_index(drop=True)
 
 
-def build_base(files):
+def build_base_from_files(files):
     all_rows = []
     for f in files:
         for header_row in [2, 0, 1, 3]:
             try:
                 df = pd.read_excel(f, header=header_row, dtype=str)
                 df.columns = [str(c).strip() for c in df.columns]
-
                 rename = {}
                 for col in df.columns:
                     cl = col.lower().strip()
@@ -157,19 +150,15 @@ def build_base(files):
                     elif cl == "msrp":
                         rename[col] = "MSRP"
                 df = df.rename(columns=rename)
-
                 if "Style" not in df.columns or "UPC" not in df.columns:
                     continue
-
                 needed = [c for c in ["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"] if c in df.columns]
                 df = df[needed].copy()
-                df["UPC"] = df["UPC"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(12)
+                df["UPC"] = df["UPC"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
                 df = df[df["UPC"].str.strip().str.len() > 3]
                 df = df[df["UPC"].str.strip() != "nan"]
-
                 if "Size" in df.columns:
                     df = df[df["Size"].isin(SIZES)]
-
                 df = df[df["Style"].notna() & (df["Style"].str.strip() != "")]
                 all_rows.append(df)
                 break
@@ -178,107 +167,69 @@ def build_base(files):
 
     if not all_rows:
         return pd.DataFrame(columns=["Style", "Size", "UPC", "DESCRIPTION", "WHOLESALE", "MSRP"])
-
     base = pd.concat(all_rows, ignore_index=True)
     if "Style" in base.columns and "Size" in base.columns:
         base = base.drop_duplicates(subset=["Style", "Size"], keep="first")
     return base.reset_index(drop=True)
 
 
-def build_upc_sheet(base):
-    rows = []
-    for _, r in base.iterrows():
-        rows.append({
-            "Styles": r.get("Style", ""),
-            "Size": r.get("Size", ""),
-            "CONCAT": f"{r.get('Style','')}{r.get('Size','')}",
-            "UPC": r.get("UPC", ""),
-            "DESCRIPTION": r.get("DESCRIPTION", ""),
-            "WholeSale": r.get("WHOLESALE", ""),
-            "MSRP": r.get("MSRP", ""),
-        })
-    return pd.DataFrame(rows, columns=["Styles", "Size", "CONCAT", "UPC", "DESCRIPTION", "WholeSale", "MSRP"])
+def fill_template_base(base_df):
+    """Abre el template, llena la hoja BASE con los datos, devuelve bytes."""
+    if not os.path.exists(TEMPLATE_PATH):
+        raise FileNotFoundError(
+            f"No se encontró el archivo template_upcs.xlsx en:\n{TEMPLATE_PATH}\n"
+            "Coloca el archivo en la misma carpeta que upcs_app.py."
+        )
 
+    wb = load_workbook(TEMPLATE_PATH)
 
-HEADER_FILL = PatternFill("solid", fgColor="006699")
-HEADER_FONT = Font(bold=True, color="FFFFFF")
-MONEY_FMT   = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
+    if "BASE" not in wb.sheetnames:
+        raise ValueError("El template no tiene una hoja llamada 'BASE'.")
 
+    ws = wb["BASE"]
 
-def style_header(ws):
+    # Leer encabezados del template para mapear columnas correctamente
+    template_headers = {}
     for cell in ws[1]:
-        if cell.value is not None:
-            cell.fill = HEADER_FILL
-            cell.font = HEADER_FONT
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.freeze_panes = "A2"
+        if cell.value:
+            template_headers[str(cell.value).strip().upper()] = cell.column
 
+    # Borrar datos existentes (conservar encabezados)
+    if ws.max_row > 1:
+        ws.delete_rows(2, ws.max_row - 1)
 
-def add_excel_table(ws, table_name):
-    """Add a real Excel Table so [@ColumnName] structured references work."""
-    max_col = get_column_letter(ws.max_column)
-    max_row = ws.max_row
-    tab = Table(displayName=table_name, ref=f"A1:{max_col}{max_row}")
-    # No built-in style so our custom blue header colours are preserved
-    tab.tableStyleInfo = TableStyleInfo(
-        name="TableStyleLight1",
-        showFirstColumn=False, showLastColumn=False,
-        showRowStripes=False, showColumnStripes=False,
-    )
-    ws.add_table(tab)
+    # Mapa: nombre columna DataFrame → posibles nombres en el template
+    col_map = {
+        "Style":       ["STYLE"],
+        "Size":        ["SIZE"],
+        "UPC":         ["UPC"],
+        "DESCRIPTION": ["DESCRIPTION"],
+        "WHOLESALE":   ["WHOLESALE", "WHOLESAL"],
+        "MSRP":        ["MSRP"],
+    }
 
+    # Construir mapa final: df_column → column_index en template
+    fill_map = {}
+    for df_col, template_names in col_map.items():
+        for t_name in template_names:
+            if t_name in template_headers:
+                fill_map[df_col] = template_headers[t_name]
+                break
 
-def autofit(ws):
-    for col in ws.columns:
-        max_len = max((len(str(cell.value or "")) for cell in col), default=0)
-        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(max_len + 2, 10), 50)
+    MONEY_FMT = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
 
-
-def build_output_xlsx(upc_df, base):
-    wb = Workbook()
-    styles_list = sorted(base["Style"].dropna().unique().tolist())
-
-    # ── Styles ──
-    ws_styles = wb.active
-    ws_styles.title = "Styles"
-    ws_styles.append(["Styles"])
-    for s in styles_list:
-        ws_styles.append([s])
-    style_header(ws_styles)
-    autofit(ws_styles)
-    add_excel_table(ws_styles, "StylesList")
-
-    # ── UPC (fórmulas idénticas al manual) ──
-    ws_upc = wb.create_sheet("UPC")
-    ws_upc.append(["Styles", "Size", "CONCAT", "UPC", "DESCRIPTION", "WholeSale", "MSRP"])
-    for i, (_, r) in enumerate(upc_df.iterrows(), start=2):
-        ws_upc.cell(row=i, column=1, value=r.get("Styles", ""))
-        ws_upc.cell(row=i, column=2, value=r.get("Size", ""))
-        ws_upc.cell(row=i, column=3, value=f"=A{i}&B{i}")
-        cell_upc = ws_upc.cell(row=i, column=4, value=str(r.get("UPC", "")))
-        cell_upc.number_format = "@"
-        ws_upc.cell(row=i, column=5, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,4,0),"N/A")')
-        ws_upc.cell(row=i, column=6, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,5,0),"N/A")')
-        ws_upc.cell(row=i, column=6).number_format = MONEY_FMT
-        ws_upc.cell(row=i, column=7, value=f'=IFERROR(VLOOKUP(A{i},BASE!$A:$F,6,0),"N/A")')
-        ws_upc.cell(row=i, column=7).number_format = MONEY_FMT
-    style_header(ws_upc)
-    autofit(ws_upc)
-    add_excel_table(ws_upc, "UPCData")
-
-    # ── BASE ──
-    ws_base = wb.create_sheet("BASE")
-    for row in dataframe_to_rows(base, index=False, header=True):
-        ws_base.append(row)
-    style_header(ws_base)
-    ws_base.auto_filter.ref = ws_base.dimensions
-    for cell in ws_base["C"][1:]:
-        cell.number_format = "@"
-    for row in ws_base.iter_rows(min_row=2, max_row=ws_base.max_row):
-        for cell in row:
-            if cell.column in (5, 6):
+    for r_idx, (_, row) in enumerate(base_df.iterrows(), start=2):
+        for df_col, col_idx in fill_map.items():
+            if df_col not in base_df.columns:
+                continue
+            value = row[df_col]
+            if pd.isna(value):
+                value = None
+            cell = ws.cell(row=r_idx, column=col_idx, value=value)
+            if df_col == "UPC":
+                cell.number_format = "@"
+            elif df_col in ("WHOLESALE", "MSRP"):
                 cell.number_format = MONEY_FMT
-    autofit(ws_base)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -295,42 +246,48 @@ if has_data:
             if db_df is not None:
                 base_df = build_base_from_df(db_df, brands=selected_brands)
             else:
-                base_df = build_base(list(uploaded) if uploaded else [])
+                base_df = build_base_from_files(list(uploaded) if uploaded else [])
 
         if base_df.empty:
-            st.error("No se encontraron datos. Verifica que el archivo sea el correcto.")
+            st.error("No se encontraron datos. Verifica la conexión o el archivo.")
         else:
-            upc_df = build_upc_sheet(base_df)
-            xlsx_bytes = build_output_xlsx(upc_df, base_df)
-            fname = f"UPCS_{file_date.strftime('%m.%d.%Y')}.xlsx"
-
-            # Guardar directo en disco (confiable aunque sea pesado)
-            out_dir = os.path.join(os.getcwd(), "UPCs_generados")
-            os.makedirs(out_dir, exist_ok=True)
-            out_path = os.path.join(out_dir, fname)
             try:
-                with open(out_path, "wb") as fh:
-                    fh.write(xlsx_bytes)
-                saved_path = out_path
-            except Exception:
-                saved_path = None
+                xlsx_bytes = fill_template_base(base_df)
+                fname = f"UPCS_{file_date.strftime('%m.%d.%Y')}.xlsx"
 
-            st.session_state["output"] = {
-                "fname": fname,
-                "bytes": xlsx_bytes,
-                "count": len(base_df),
-                "path": saved_path,
-            }
+                out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, fname)
+                try:
+                    with open(out_path, "wb") as fh:
+                        fh.write(xlsx_bytes)
+                    saved_path = out_path
+                except Exception:
+                    saved_path = None
 
-# Mostrar resultado (persiste aunque la app se recargue)
+                st.session_state["output"] = {
+                    "fname": fname,
+                    "bytes": xlsx_bytes,
+                    "count": len(base_df),
+                    "path": saved_path,
+                }
+            except FileNotFoundError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Error al generar el archivo: {e}")
+
 out = st.session_state.get("output")
 if out:
     st.markdown(
-        f'<div class="success-box">Listo — {out["count"]:,} registros procesados</div>',
+        f'<div class="success-box">✅ Listo — {out["count"]:,} registros en BASE</div>',
         unsafe_allow_html=True,
     )
     if out.get("path"):
-        st.success(f"✅ Guardado automáticamente en:\n\n`{out['path']}`")
+        st.success(
+            f"Guardado en:\n\n`{out['path']}`\n\n"
+            "**Próximos pasos:** Abre el archivo → escribe los estilos en la hoja **Styles** → "
+            "da clic en **Datos → Actualizar todo** para ver los resultados en la hoja UPC."
+        )
     st.download_button(
         label=f"⬇ Descargar {out['fname']}",
         data=out["bytes"],

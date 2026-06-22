@@ -462,35 +462,57 @@ with tab_search:
                 df = db_df.copy()
                 df.columns = [str(c).strip().lower() for c in df.columns]
 
-                # Filtrar por estilos
                 style_col = next((c for c in df.columns if c in ("style", "ivnum")), None)
+
+                # Estilos encontrados en la DB
                 if style_col:
-                    df = df[df[style_col].astype(str).str.strip().isin(styles_list)]
+                    df_found = df[df[style_col].astype(str).str.strip().isin(styles_list)].copy()
+                else:
+                    df_found = df.copy()
 
                 # Filtrar por marca
-                if selected_brands_search and "reporting_brand_name" in df.columns:
-                    # Expandir alias si son marcas del brand_map
+                if selected_brands_search and "reporting_brand_name" in df_found.columns:
                     allowed = []
                     for b in selected_brands_search:
                         allowed.extend(BRAND_MAP.get(b, [b]))
-                    df = df[df["reporting_brand_name"].astype(str).str.strip().isin(allowed)]
+                    df_found = df_found[df_found["reporting_brand_name"].astype(str).str.strip().isin(allowed)]
 
                 # Filtrar por tallas
-                if "size" in df.columns:
-                    df = df[df["size"].astype(str).str.strip().isin(SIZES)]
+                if "size" in df_found.columns:
+                    df_found = df_found[df_found["size"].astype(str).str.strip().isin(SIZES)]
 
                 # Limpiar UPC
-                if "upc" in df.columns:
-                    df["upc"] = df["upc"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-                    df = df[df["upc"].str.len() > 3]
-                    df = df[df["upc"].str.lower() != "nan"]
+                if "upc" in df_found.columns:
+                    df_found["upc"] = df_found["upc"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+                    df_found = df_found[df_found["upc"].str.len() > 3]
+                    df_found = df_found[df_found["upc"].str.lower() != "nan"]
 
                 # Quitar duplicados Style+Size
-                if style_col and "size" in df.columns:
-                    df = df.drop_duplicates(subset=[style_col, "size"], keep="first")
+                if style_col and "size" in df_found.columns:
+                    df_found = df_found.drop_duplicates(subset=[style_col, "size"], keep="first")
+
+                # Estilos que NO se encontraron → fila N/A
+                found_styles = set(df_found[style_col].astype(str).str.strip().tolist()) if style_col and not df_found.empty else set()
+                missing_styles = [s for s in styles_list if s not in found_styles]
+                missing_rows = []
+                for ms in missing_styles:
+                    row = {style_col or "style": ms, "size": "N/A", "upc": "N/A", "description": "N/A"}
+                    for curr in selected_currencies:
+                        ws_col, ms_col = CURRENCY_MAP[curr]
+                        row[ws_col] = None
+                        row[ms_col] = None
+                    missing_rows.append(row)
+
+                if missing_rows:
+                    df_missing = pd.DataFrame(missing_rows)
+                    df = pd.concat([df_found, df_missing], ignore_index=True)
+                else:
+                    df = df_found
+
+            if missing_styles:
+                st.warning(f"⚠️ {len(missing_styles)} estilo(s) no encontrado(s) en la DB — se incluyen como N/A: {', '.join(missing_styles)}")
 
             if df.empty:
-                st.warning("No se encontraron estilos. Verifica que estén en la base de datos y que los datos estén descargados.")
             else:
                 # Construir columnas del Excel
                 HEADER_FILL = PatternFill("solid", fgColor="006699")
@@ -510,8 +532,9 @@ with tab_search:
 
                 # Data
                 desc_col = next((c for c in df.columns if c in ("description", "ivdesc")), None)
+                active_style_col = style_col or "style"
                 for _, row in df.iterrows():
-                    style_val = str(row.get(style_col, "") or "")
+                    style_val = str(row.get(active_style_col, "") or "")
                     size_val  = str(row.get("size", "") or "")
                     upc_val   = str(row.get("upc", "") or "")
                     desc_val  = str(row.get(desc_col, "") or "") if desc_col else ""

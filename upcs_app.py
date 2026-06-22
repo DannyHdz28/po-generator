@@ -6,12 +6,36 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import date
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from pbi_downloader import run_download
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template_upcs.xlsx")
 SIZES = ["2T", "3T", "4", "4T", "5", "6", "6X", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
+
+CURRENCY_MAP = {
+    "USD": ("wholesale_usd", "msrp_usd"),
+    "CAD": ("wholesale_cad", "msrp_cad"),
+    "GBP": ("wholesale_gbp", "msrp_gbp"),
+    "EUR": ("wholesale_eur", "msrp_eur"),
+    "AED": ("wholesale_aed", "msrp_aed"),
+    "MXN": ("wholesale_mxn", "msrp_mxn"),
+    "BRL": ("wholesale_brl", "msrp_brl"),
+    "CLP": ("wholesale_clp", "msrp_clp"),
+    "AUD": ("wholesale_aud", "msrp_aud"),
+    "NZD": ("wholesale_nzd", "msrp_nzd"),
+    "RMB": ("wholesale_rmb", "msrp_rmb"),
+    "ARS": ("wholesale_ars", "msrp_ars"),
+    "ECU": ("wholesale_ecu", "msrp_ecu"),
+    "BOB": ("wholesale_bob", "msrp_bob"),
+    "PEN": ("wholesale_pen", "msrp_pen"),
+}
+
+BRAND_MAP = {
+    "Pro Standard":    ["Pro Standard"],
+    "Off White / L/AB": ["Off-White Division"],
+}
 
 st.set_page_config(page_title="UPCs Generator", page_icon="🏷️", layout="centered")
 
@@ -72,19 +96,7 @@ with tab_manual:
     Exporta manualmente desde Power BI y sube el archivo aquí.
     </div>
     """, unsafe_allow_html=True)
-
-uploaded = st.file_uploader("Sube el archivo exportado de Power BI", type=["xlsx", "csv"], accept_multiple_files=True)
-
-st.markdown("#### Paso 2 — Genera el archivo")
-file_date = st.date_input("Fecha", value=date.today())
-
-BRANDS = ["Pro Standard", "Off White / L/AB"]
-selected_brands = st.multiselect(
-    "Filtrar por marca (vacío = todas las marcas)",
-    options=BRANDS,
-    default=[],
-    placeholder="Selecciona una o más marcas..."
-)
+    uploaded = st.file_uploader("Sube el archivo exportado de Power BI", type=["xlsx", "csv"], accept_multiple_files=True, key="file_upload")
 
 
 def build_base_from_df(df, brands=None):
@@ -334,63 +346,247 @@ def fill_template_base(base_df):
 db_df = st.session_state.get("db_df", None)
 has_data = db_df is not None or (uploaded and len(uploaded) > 0)
 
-if has_data:
-    if st.button("GENERAR UPCs", type="primary", use_container_width=True):
-        st.session_state.pop("output", None)
-        with st.spinner("Procesando... (puede tardar 1-2 min con muchos datos)"):
-            if db_df is not None:
-                base_df = build_base_from_df(db_df, brands=selected_brands)
-            else:
-                base_df = build_base_from_files(list(uploaded) if uploaded else [])
+st.markdown("#### Paso 2 — Genera el archivo")
+tab_base, tab_search = st.tabs(["📊 BASE Completo", "🔍 Búsqueda por Estilo / Moneda"])
 
-        if base_df.empty:
-            st.error("No se encontraron datos. Verifica la conexión o el archivo.")
+# ── TAB 1: BASE Completo ─────────────────────────────────────────────────
+with tab_base:
+    file_date = st.date_input("Fecha", value=date.today(), key="date_base")
+
+    BRANDS = ["Pro Standard", "Off White / L/AB"]
+    selected_brands = st.multiselect(
+        "Filtrar por marca (vacío = todas)",
+        options=BRANDS, default=[],
+        placeholder="Selecciona una o más marcas...",
+        key="brands_base",
+    )
+
+    if has_data:
+        if st.button("GENERAR BASE", type="primary", use_container_width=True):
+            st.session_state.pop("output", None)
+            with st.spinner("Procesando..."):
+                if db_df is not None:
+                    base_df = build_base_from_df(db_df, brands=selected_brands)
+                else:
+                    base_df = build_base_from_files(list(uploaded) if uploaded else [])
+
+            if base_df.empty:
+                st.error("No se encontraron datos.")
+            else:
+                try:
+                    xlsx_bytes = fill_template_base(base_df)
+                    fname = f"UPCS_{file_date.strftime('%m.%d.%Y')}.xlsx"
+                    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
+                    os.makedirs(out_dir, exist_ok=True)
+                    out_path = os.path.join(out_dir, fname)
+                    try:
+                        with open(out_path, "wb") as fh:
+                            fh.write(xlsx_bytes)
+                        saved_path = out_path
+                    except Exception:
+                        saved_path = None
+                    st.session_state["output"] = {
+                        "fname": fname, "bytes": xlsx_bytes,
+                        "count": len(base_df), "path": saved_path,
+                    }
+                except FileNotFoundError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Error al generar: {e}")
+    else:
+        st.info("Primero conecta a la base de datos (Paso 1).")
+
+    out = st.session_state.get("output")
+    if out:
+        st.markdown(f'<div class="success-box">✅ Listo — {out["count"]:,} registros en BASE</div>', unsafe_allow_html=True)
+        if out.get("path"):
+            st.success(f"Guardado en:\n\n`{out['path']}`\n\nAbre el archivo → escribe estilos en **Styles** → **Datos → Actualizar todo**")
+        st.download_button(
+            label=f"⬇ Descargar {out['fname']}",
+            data=out["bytes"], file_name=out["fname"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+# ── TAB 2: Búsqueda por Estilo / Moneda ─────────────────────────────────
+with tab_search:
+    st.markdown("Busca estilos específicos y selecciona la moneda para los precios.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        styles_input = st.text_area(
+            "Estilos (uno por línea)",
+            placeholder="BCB1517653-WHT\nFPE6411013-KGR\n...",
+            height=180,
+            key="styles_input",
+        )
+
+    with col2:
+        # Marcas disponibles (dinámico si hay datos cargados)
+        if db_df is not None and "reporting_brand_name" in db_df.columns:
+            available_brands = sorted(db_df["reporting_brand_name"].dropna().unique().tolist())
         else:
-            try:
-                xlsx_bytes = fill_template_base(base_df)
-                fname = f"UPCS_{file_date.strftime('%m.%d.%Y')}.xlsx"
+            available_brands = list(BRAND_MAP.keys())
+
+        selected_brands_search = st.multiselect(
+            "Marca (vacío = todas)",
+            options=available_brands, default=[],
+            placeholder="Selecciona marca(s)...",
+            key="brands_search",
+        )
+
+        selected_currencies = st.multiselect(
+            "Moneda(s)",
+            options=list(CURRENCY_MAP.keys()),
+            default=["USD"],
+            placeholder="Selecciona moneda(s)...",
+            key="currencies_search",
+        )
+
+    file_date_search = st.date_input("Fecha", value=date.today(), key="date_search")
+
+    if st.button("🔍 BUSCAR Y GENERAR", type="primary", use_container_width=True):
+        st.session_state.pop("output_search", None)
+
+        if db_df is None:
+            st.error("Primero conecta a la base de datos (Paso 1).")
+        elif not styles_input.strip():
+            st.error("Escribe al menos un estilo.")
+        elif not selected_currencies:
+            st.error("Selecciona al menos una moneda.")
+        else:
+            styles_list = [s.strip() for s in styles_input.strip().splitlines() if s.strip()]
+
+            with st.spinner("Buscando..."):
+                df = db_df.copy()
+                df.columns = [str(c).strip().lower() for c in df.columns]
+
+                # Filtrar por estilos
+                style_col = next((c for c in df.columns if c in ("style", "ivnum")), None)
+                if style_col:
+                    df = df[df[style_col].astype(str).str.strip().isin(styles_list)]
+
+                # Filtrar por marca
+                if selected_brands_search and "reporting_brand_name" in df.columns:
+                    # Expandir alias si son marcas del brand_map
+                    allowed = []
+                    for b in selected_brands_search:
+                        allowed.extend(BRAND_MAP.get(b, [b]))
+                    df = df[df["reporting_brand_name"].astype(str).str.strip().isin(allowed)]
+
+                # Filtrar por tallas
+                if "size" in df.columns:
+                    df = df[df["size"].astype(str).str.strip().isin(SIZES)]
+
+                # Limpiar UPC
+                if "upc" in df.columns:
+                    df["upc"] = df["upc"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+                    df = df[df["upc"].str.len() > 3]
+                    df = df[df["upc"].str.lower() != "nan"]
+
+                # Quitar duplicados Style+Size
+                if style_col and "size" in df.columns:
+                    df = df.drop_duplicates(subset=[style_col, "size"], keep="first")
+
+            if df.empty:
+                st.warning("No se encontraron estilos. Verifica que estén en la base de datos y que los datos estén descargados.")
+            else:
+                # Construir columnas del Excel
+                HEADER_FILL = PatternFill("solid", fgColor="006699")
+                HEADER_FONT = Font(bold=True, color="FFFFFF")
+                MONEY_FMT = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
+
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "UPCs"
+
+                # Headers
+                headers = ["Styles", "Size", "UPC", "DESCRIPTION"]
+                for curr in selected_currencies:
+                    headers.append(f"WholeSale_{curr}")
+                    headers.append(f"MSRP_{curr}")
+                ws.append(headers)
+
+                # Data
+                desc_col = next((c for c in df.columns if c in ("description", "ivdesc")), None)
+                for _, row in df.iterrows():
+                    style_val = str(row.get(style_col, "") or "")
+                    size_val  = str(row.get("size", "") or "")
+                    upc_val   = str(row.get("upc", "") or "")
+                    desc_val  = str(row.get(desc_col, "") or "") if desc_col else ""
+
+                    data_row = [style_val, size_val, upc_val, desc_val]
+                    for curr in selected_currencies:
+                        ws_col, ms_col = CURRENCY_MAP[curr]
+                        ws_val = row.get(ws_col)
+                        ms_val = row.get(ms_col)
+                        try:
+                            ws_val = float(ws_val) if ws_val is not None and str(ws_val) not in ("", "nan", "None") else None
+                        except (ValueError, TypeError):
+                            ws_val = None
+                        try:
+                            ms_val = float(ms_val) if ms_val is not None and str(ms_val) not in ("", "nan", "None") else None
+                        except (ValueError, TypeError):
+                            ms_val = None
+                        data_row.extend([ws_val, ms_val])
+                    ws.append(data_row)
+
+                # Format UPC column as text
+                upc_col_idx = 3
+                for cell in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=upc_col_idx, max_col=upc_col_idx):
+                    cell[0].number_format = "@"
+
+                # Format price columns
+                price_start = 5
+                for c_idx in range(price_start, price_start + len(selected_currencies) * 2):
+                    for cell in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=c_idx, max_col=c_idx):
+                        cell[0].number_format = MONEY_FMT
+
+                # Style header
+                for cell in ws[1]:
+                    cell.fill = HEADER_FILL
+                    cell.font = HEADER_FONT
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                ws.auto_filter.ref = ws.dimensions
+                ws.freeze_panes = "A2"
+
+                # Autofit columns
+                for col in ws.columns:
+                    max_len = max((len(str(c.value or "")) for c in col), default=0)
+                    ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(max_len + 2, 10), 50)
+
+                buf = io.BytesIO()
+                wb.save(buf)
+                xlsx_bytes = buf.getvalue()
+
+                curr_label = "_".join(selected_currencies)
+                fname_s = f"UPCS_Estilos_{curr_label}_{file_date_search.strftime('%m.%d.%Y')}.xlsx"
 
                 out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
                 os.makedirs(out_dir, exist_ok=True)
-                out_path = os.path.join(out_dir, fname)
+                out_path = os.path.join(out_dir, fname_s)
                 try:
                     with open(out_path, "wb") as fh:
                         fh.write(xlsx_bytes)
-                    saved_path = out_path
+                    saved_path_s = out_path
                 except Exception:
-                    saved_path = None
+                    saved_path_s = None
 
-                st.session_state["output"] = {
-                    "fname": fname,
-                    "bytes": xlsx_bytes,
-                    "count": len(base_df),
-                    "path": saved_path,
+                st.session_state["output_search"] = {
+                    "fname": fname_s, "bytes": xlsx_bytes,
+                    "count": len(df), "path": saved_path_s,
                 }
-            except FileNotFoundError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"Error al generar el archivo: {e}")
 
-out = st.session_state.get("output")
-if out:
-    st.markdown(
-        f'<div class="success-box">✅ Listo — {out["count"]:,} registros en BASE</div>',
-        unsafe_allow_html=True,
-    )
-    if out.get("path"):
-        st.success(
-            f"Guardado en:\n\n`{out['path']}`\n\n"
-            "**Próximos pasos:** Abre el archivo → escribe los estilos en la hoja **Styles** → "
-            "da clic en **Datos → Actualizar todo** para ver los resultados en la hoja UPC."
+    out_s = st.session_state.get("output_search")
+    if out_s:
+        st.markdown(f'<div class="success-box">✅ {out_s["count"]:,} registros encontrados</div>', unsafe_allow_html=True)
+        if out_s.get("path"):
+            st.success(f"Guardado en:\n\n`{out_s['path']}`")
+        st.download_button(
+            label=f"⬇ Descargar {out_s['fname']}",
+            data=out_s["bytes"], file_name=out_s["fname"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="dl_search",
         )
-    st.download_button(
-        label=f"⬇ Descargar {out['fname']}",
-        data=out["bytes"],
-        file_name=out["fname"],
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-elif not has_data:
-    st.info("Conecta a la base de datos o sube un archivo de Power BI para continuar.")
-else:
-    st.info("Conecta a la base de datos o sube un archivo de Power BI para continuar.")

@@ -289,10 +289,25 @@ if uploaded_pdfs and selected_currencies:
             try:
                 if price_file.name.endswith(".csv"):
                     df_prices = pd.read_csv(price_file, dtype=str)
+                    df_prices.columns = [str(c).strip().upper() for c in df_prices.columns]
                 else:
-                    df_prices = pd.read_excel(price_file, dtype=str)
-
-                df_prices.columns = [str(c).strip().upper() for c in df_prices.columns]
+                    # Try header rows 0-3 to find the one with real column names
+                    df_prices = None
+                    for hr in [0, 1, 2, 3]:
+                        try:
+                            _df = pd.read_excel(price_file, header=hr, dtype=str)
+                            _df.columns = [str(c).strip().upper() for c in _df.columns]
+                            if any(c in _df.columns for c in ["STOCK", "STYLE", "MSRP"]):
+                                df_prices = _df
+                                break
+                        except Exception:
+                            continue
+                    # Fallback: read by column position N=13, T=19, U=20, V=21
+                    if df_prices is None:
+                        _df = pd.read_excel(price_file, header=0, dtype=str,
+                                            usecols=[13, 19, 20, 21])
+                        _df.columns = ["STOCK", "CURRENCY", "LINE COST", "MSRP"]
+                        df_prices = _df
 
                 style_col_xls = next((c for c in ["STOCK", "STYLE"] if c in df_prices.columns), None)
                 currency_col  = next((c for c in ["CURRENCY", "MONEDA"] if c in df_prices.columns), None)

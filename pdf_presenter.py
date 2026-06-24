@@ -153,9 +153,11 @@ def process_pdf(pdf_bytes, price_data, currency):
                     })
                 current_style = None
 
-        # Redact with WHITE background (price areas are always on white)
+        # Redact with WHITE background (price areas are always on white).
+        # Add 2pt top margin so the rect doesn't clip the style code line above.
         for rep in replacements:
-            page.add_redact_annot(rep["rect"], fill=(1, 1, 1))
+            safe_rect = fitz.Rect(rep["rect"].x0, rep["rect"].y0 + 2, rep["rect"].x1, rep["rect"].y1)
+            page.add_redact_annot(safe_rect, fill=(1, 1, 1))
         page.apply_redactions()
 
         # Re-insert text

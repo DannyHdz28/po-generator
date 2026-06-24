@@ -8,7 +8,7 @@ import psycopg2
 from datetime import date
 from PIL import Image
 from pptx import Presentation
-from pptx.util import Inches, Emu
+from pptx.util import Inches
 
 DB_HOST     = "db.maximaapparel.com"
 DB_PORT     = 5432
@@ -36,17 +36,16 @@ CURRENCY_MAP = {
 }
 
 CURRENCY_SYMBOLS = {
-    "USD": "$",    "CAD": "CA$",  "GBP": "£",    "EUR": "€",
+    "USD": "$",    "CAD": "CA$",  "GBP": "GBP ", "EUR": "EUR ",
     "AED": "AED ", "MXN": "MX$", "BRL": "R$",   "CLP": "CLP$",
-    "AUD": "AU$",  "NZD": "NZ$", "RMB": "¥",    "ARS": "AR$",
+    "AUD": "AU$",  "NZD": "NZ$", "RMB": "RMB ", "ARS": "AR$",
     "ECU": "$",    "BOB": "Bs.", "PEN": "S/.",
 }
 
 PRICE_RE = re.compile(r'WS:\s*\$?([\d,]+\.?\d*)\s*/\s*MSRP:\s*\$?([\d,]+\.?\d*)', re.IGNORECASE)
-STYLE_RE = re.compile(r'^[A-Z]{2,5}\d{6,}-[A-Z0-9]{2,5}$')
+STYLE_RE  = re.compile(r'^[A-Z]{2,5}\d{6,}-[A-Z0-9]{2,5}$')
 
 st.set_page_config(page_title="PDF → PPT Converter", page_icon="📑", layout="centered")
-
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
@@ -54,7 +53,6 @@ html,body,[class*="css"]{font-family:'DM Sans',sans-serif;}
 .main-title{font-family:'Bebas Neue',sans-serif;font-size:3rem;letter-spacing:4px;color:#e8c84a;}
 .sub-title{font-family:'Bebas Neue',sans-serif;font-size:1.1rem;letter-spacing:3px;color:#888;}
 .success-box{background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.4);border-radius:6px;padding:12px 16px;font-size:0.9rem;color:#4ade80;}
-.info-box{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:12px 16px;font-size:0.85rem;color:#ccc;margin-bottom:8px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -63,6 +61,7 @@ st.markdown('<div class="sub-title">MAXIMA APPAREL — PRICE CONVERTER</div>', u
 st.markdown("---")
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
 def fetch_prices(style_codes):
     if not style_codes:
         return {}
@@ -84,24 +83,8 @@ def fetch_prices(style_codes):
         return {}
 
 
-def sample_bg(page, rect):
-    """Sample background color under a rect before redaction."""
-    clip = fitz.Rect(rect)
-    pix = page.get_pixmap(matrix=fitz.Matrix(1, 1), clip=clip, alpha=False)
-    if pix.width > 0 and pix.height > 0:
-        cx, cy = max(0, pix.width // 2 - 1), max(0, pix.height // 2 - 1)
-        s = pix.samples
-        idx = (cy * pix.width + cx) * pix.n
-        r, g, b = s[idx] / 255, s[idx + 1] / 255, s[idx + 2] / 255
-        return (r, g, b)
-    return (1.0, 1.0, 1.0)
-
-
-def int_to_rgb(color_int):
-    r = ((color_int >> 16) & 0xFF) / 255
-    g = ((color_int >> 8) & 0xFF) / 255
-    b = (color_int & 0xFF) / 255
-    return (r, g, b)
+def int_to_rgb(c):
+    return ((c >> 16) & 0xFF) / 255, ((c >> 8) & 0xFF) / 255, (c & 0xFF) / 255
 
 
 def fmt_price(val, currency):
@@ -113,20 +96,33 @@ def fmt_price(val, currency):
     return f"{sym}{float(val):,.2f}"
 
 
+def extract_styles_from_pdf(pdf_bytes):
+    """Returns list of (style_code) found in PDF, in order."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    styles = []
+    seen = set()
+    for pn in range(len(doc)):
+        for line in doc[pn].get_text().splitlines():
+            s = line.strip()
+            if STYLE_RE.match(s) and s not in seen:
+                styles.append(s)
+                seen.add(s)
+    doc.close()
+    return styles
+
+
 def process_pdf(pdf_bytes, price_data, currency):
-    """Replace prices in PDF for given currency, return list of PNG bytes (non-empty pages only)."""
+    """Replace prices in PDF. price_data: {ivnum: {ws_col: val, ms_col: val}}"""
     ws_col, ms_col = CURRENCY_MAP[currency]
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     result_pngs = []
 
     for page_num in range(len(doc)):
         page = doc[page_num]
-
-        # Skip empty pages
         if not page.get_text().strip():
             continue
 
-        # Collect all text spans in reading order
+        # Collect spans
         spans = []
         for block in page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
             if block.get("type") != 0:
@@ -136,7 +132,6 @@ def process_pdf(pdf_bytes, price_data, currency):
                     if span["text"].strip():
                         spans.append(span)
 
-        # Find (style_code, price_span) pairs
         replacements = []
         current_style = None
         for span in spans:
@@ -146,9 +141,10 @@ def process_pdf(pdf_bytes, price_data, currency):
             elif PRICE_RE.search(txt) and current_style:
                 row = price_data.get(current_style)
                 if row is not None:
-                    ws_val = row.get(ws_col)
-                    ms_val = row.get(ms_col)
-                    new_text = f"WS: {fmt_price(ws_val, currency)} / MSRP: {fmt_price(ms_val, currency)}"
+                    new_text = (
+                        f"WS: {fmt_price(row.get(ws_col), currency)} / "
+                        f"MSRP: {fmt_price(row.get(ms_col), currency)}"
+                    )
                     replacements.append({
                         "rect":     fitz.Rect(span["bbox"]),
                         "new_text": new_text,
@@ -157,15 +153,13 @@ def process_pdf(pdf_bytes, price_data, currency):
                     })
                 current_style = None
 
-        # Sample backgrounds, then redact
-        bg_colors = [sample_bg(page, r["rect"]) for r in replacements]
-
-        for rep, bg in zip(replacements, bg_colors):
-            page.add_redact_annot(rep["rect"], fill=bg)
+        # Redact with WHITE background (price areas are always on white)
+        for rep in replacements:
+            page.add_redact_annot(rep["rect"], fill=(1, 1, 1))
         page.apply_redactions()
 
-        # Re-insert new price text
-        for rep, bg in zip(replacements, bg_colors):
+        # Re-insert text
+        for rep in replacements:
             rect = rep["rect"]
             page.insert_text(
                 (rect.x0, rect.y1 - 1),
@@ -175,7 +169,6 @@ def process_pdf(pdf_bytes, price_data, currency):
                 fontname="helv",
             )
 
-        # Render page → PNG at 2× for quality
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
         result_pngs.append(pix.tobytes("png"))
 
@@ -184,12 +177,10 @@ def process_pdf(pdf_bytes, price_data, currency):
 
 
 def build_pptx(pngs_by_currency):
-    """One slide per (currency, page). Currencies grouped in order."""
     prs = Presentation()
     prs.slide_width  = Inches(13.33)
     prs.slide_height = Inches(7.5)
     blank = prs.slide_layouts[6]
-
     for currency, pngs in pngs_by_currency.items():
         for png_bytes in pngs:
             slide = prs.slides.add_slide(blank)
@@ -204,7 +195,6 @@ def build_pptx(pngs_by_currency):
             left = (sw - pw) // 2
             top  = (sh - ph) // 2
             slide.shapes.add_picture(io.BytesIO(png_bytes), left, top, pw, ph)
-
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
@@ -214,79 +204,140 @@ def build_pptx(pngs_by_currency):
 st.markdown("#### Paso 1 — Sube los PDFs")
 uploaded_pdfs = st.file_uploader(
     "Arrastra o selecciona los PDFs de presentación",
-    type=["pdf"],
-    accept_multiple_files=True,
+    type=["pdf"], accept_multiple_files=True,
 )
 
 st.markdown("#### Paso 2 — Selecciona moneda(s)")
 selected_currencies = st.multiselect(
-    "Moneda(s)",
-    options=list(CURRENCY_MAP.keys()),
-    default=["USD"],
+    "Moneda(s)", options=list(CURRENCY_MAP.keys()), default=["USD"],
     placeholder="Selecciona moneda(s)...",
 )
 
 if uploaded_pdfs and selected_currencies:
-    if st.button("🔄 CONVERTIR Y GENERAR PPT", type="primary", use_container_width=True):
-        st.session_state.pop("ppt_output", None)
+    # Read PDFs and extract styles
+    pdf_store = {}
+    all_styles_ordered = []
+    seen_styles = set()
+    for f in uploaded_pdfs:
+        pdf_bytes = f.read()
+        styles = extract_styles_from_pdf(pdf_bytes)
+        pdf_store[f.name] = pdf_bytes
+        for s in styles:
+            if s not in seen_styles:
+                all_styles_ordered.append(s)
+                seen_styles.add(s)
 
-        # 1. Extract all style codes from uploaded PDFs
-        all_styles = set()
-        pdf_store = {}
-        for f in uploaded_pdfs:
-            pdf_bytes = f.read()
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            for pn in range(len(doc)):
-                for line in doc[pn].get_text().splitlines():
-                    if STYLE_RE.match(line.strip()):
-                        all_styles.add(line.strip())
-            doc.close()
-            pdf_store[f.name] = pdf_bytes
+    st.markdown("---")
+    tab_auto, tab_manual = st.tabs(["🔄 Automático (Base de datos)", "✏️ Manual (ingresar precios)"])
 
-        st.info(f"📦 {len(all_styles)} estilos detectados en {len(uploaded_pdfs)} PDF(s)")
+    # ── TAB AUTOMÁTICO ────────────────────────────────────────────────────────
+    with tab_auto:
+        st.markdown(f"**{len(all_styles_ordered)} estilo(s) detectados:** {', '.join(all_styles_ordered)}")
 
-        # 2. Fetch prices from DB
-        with st.spinner("Consultando base de datos..."):
-            price_data = fetch_prices(all_styles)
+        if st.button("🔄 CONVERTIR Y GENERAR PPT", type="primary", use_container_width=True, key="btn_auto"):
+            st.session_state.pop("ppt_auto", None)
 
-        found = len(price_data)
-        missing = all_styles - set(price_data.keys())
-        st.info(f"✅ {found} encontrados en DB" + (f" | ⚠️ {len(missing)} no encontrados: {', '.join(sorted(missing))}" if missing else ""))
+            with st.spinner("Consultando base de datos..."):
+                price_data = fetch_prices(set(all_styles_ordered))
 
-        # 3. Process each PDF for each currency
-        pngs_by_currency = {curr: [] for curr in selected_currencies}
-        for pdf_name, pdf_bytes in pdf_store.items():
-            for currency in selected_currencies:
-                with st.spinner(f"Procesando {pdf_name} → {currency}..."):
-                    pngs = process_pdf(pdf_bytes, price_data, currency)
-                    pngs_by_currency[currency].extend(pngs)
+            found   = set(price_data.keys())
+            missing = [s for s in all_styles_ordered if s not in found]
 
-        total_slides = sum(len(v) for v in pngs_by_currency.values())
+            st.info(f"✅ {len(found)} encontrados en DB" + (
+                f" | ⚠️ No encontrados (usa tab Manual): {', '.join(missing)}" if missing else ""
+            ))
 
-        # 4. Build PPT
-        with st.spinner("Generando PPT..."):
-            pptx_bytes = build_pptx(pngs_by_currency)
+            pngs_by_currency = {c: [] for c in selected_currencies}
+            for pdf_name, pdf_bytes in pdf_store.items():
+                for currency in selected_currencies:
+                    with st.spinner(f"{pdf_name} → {currency}..."):
+                        pngs = process_pdf(pdf_bytes, price_data, currency)
+                        pngs_by_currency[currency].extend(pngs)
 
-        curr_label = "_".join(selected_currencies)
-        fname = f"Presentacion_{curr_label}_{date.today().strftime('%m.%d.%Y')}.pptx"
+            total = sum(len(v) for v in pngs_by_currency.values())
+            with st.spinner("Generando PPT..."):
+                pptx_bytes = build_pptx(pngs_by_currency)
 
-        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
-        os.makedirs(out_dir, exist_ok=True)
-        try:
-            with open(os.path.join(out_dir, fname), "wb") as fh:
-                fh.write(pptx_bytes)
-        except Exception:
-            pass
+            curr_label = "_".join(selected_currencies)
+            fname = f"Presentacion_{curr_label}_{date.today().strftime('%m.%d.%Y')}.pptx"
+            out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
+            os.makedirs(out_dir, exist_ok=True)
+            try:
+                with open(os.path.join(out_dir, fname), "wb") as fh:
+                    fh.write(pptx_bytes)
+            except Exception:
+                pass
+            st.session_state["ppt_auto"] = {"fname": fname, "bytes": pptx_bytes, "slides": total}
 
-        st.session_state["ppt_output"] = {"fname": fname, "bytes": pptx_bytes, "slides": total_slides}
+        out = st.session_state.get("ppt_auto")
+        if out:
+            st.markdown(f'<div class="success-box">✅ {out["slides"]} diapositiva(s) generada(s)</div>', unsafe_allow_html=True)
+            st.download_button(
+                label=f"⬇ Descargar {out['fname']}",
+                data=out["bytes"], file_name=out["fname"],
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True, key="dl_auto",
+            )
 
-out = st.session_state.get("ppt_output")
-if out:
-    st.markdown(f'<div class="success-box">✅ {out["slides"]} diapositiva(s) generada(s)</div>', unsafe_allow_html=True)
-    st.download_button(
-        label=f"⬇ Descargar {out['fname']}",
-        data=out["bytes"],
-        file_name=out["fname"],
-        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        use_container_width=True,
-    )
+    # ── TAB MANUAL ────────────────────────────────────────────────────────────
+    with tab_manual:
+        st.markdown("Ingresa los precios manualmente para cada estilo y moneda.")
+
+        if not all_styles_ordered:
+            st.info("Sube un PDF primero para ver los estilos detectados.")
+        else:
+            manual_prices = {}
+            for style in all_styles_ordered:
+                st.markdown(f"**{style}**")
+                cols = st.columns(len(selected_currencies) * 2)
+                manual_prices[style] = {}
+                for i, currency in enumerate(selected_currencies):
+                    ws_col, ms_col = CURRENCY_MAP[currency]
+                    with cols[i * 2]:
+                        ws_val = st.number_input(
+                            f"WS {currency}", min_value=0.0, value=0.0,
+                            format="%.2f", key=f"ws_{style}_{currency}"
+                        )
+                    with cols[i * 2 + 1]:
+                        ms_val = st.number_input(
+                            f"MSRP {currency}", min_value=0.0, value=0.0,
+                            format="%.2f", key=f"ms_{style}_{currency}"
+                        )
+                    manual_prices[style][ws_col] = ws_val if ws_val > 0 else None
+                    manual_prices[style][ms_col] = ms_val if ms_val > 0 else None
+                st.markdown("---")
+
+            if st.button("✏️ GENERAR PPT CON PRECIOS MANUALES", type="primary", use_container_width=True, key="btn_manual"):
+                st.session_state.pop("ppt_manual", None)
+
+                pngs_by_currency = {c: [] for c in selected_currencies}
+                for pdf_name, pdf_bytes in pdf_store.items():
+                    for currency in selected_currencies:
+                        with st.spinner(f"{pdf_name} → {currency}..."):
+                            pngs = process_pdf(pdf_bytes, manual_prices, currency)
+                            pngs_by_currency[currency].extend(pngs)
+
+                total = sum(len(v) for v in pngs_by_currency.values())
+                with st.spinner("Generando PPT..."):
+                    pptx_bytes = build_pptx(pngs_by_currency)
+
+                curr_label = "_".join(selected_currencies)
+                fname = f"Presentacion_Manual_{curr_label}_{date.today().strftime('%m.%d.%Y')}.pptx"
+                out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
+                os.makedirs(out_dir, exist_ok=True)
+                try:
+                    with open(os.path.join(out_dir, fname), "wb") as fh:
+                        fh.write(pptx_bytes)
+                except Exception:
+                    pass
+                st.session_state["ppt_manual"] = {"fname": fname, "bytes": pptx_bytes, "slides": total}
+
+            out_m = st.session_state.get("ppt_manual")
+            if out_m:
+                st.markdown(f'<div class="success-box">✅ {out_m["slides"]} diapositiva(s) generada(s)</div>', unsafe_allow_html=True)
+                st.download_button(
+                    label=f"⬇ Descargar {out_m['fname']}",
+                    data=out_m["bytes"], file_name=out_m["fname"],
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True, key="dl_manual",
+                )

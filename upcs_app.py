@@ -513,6 +513,7 @@ with tab_search:
                 st.warning(f"⚠️ {len(missing_styles)} estilo(s) no encontrado(s) en la DB — se incluyen como N/A: {', '.join(missing_styles)}")
 
             if df.empty:
+                st.error("No se encontraron datos.")
             else:
                 # Construir columnas del Excel
                 HEADER_FILL = PatternFill("solid", fgColor="006699")

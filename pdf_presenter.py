@@ -281,63 +281,88 @@ if uploaded_pdfs and selected_currencies:
 
     # ── TAB MANUAL ────────────────────────────────────────────────────────────
     with tab_manual:
-        st.markdown("Ingresa los precios manualmente para cada estilo y moneda.")
+        st.markdown("Sube tu archivo Excel con los precios. Columnas requeridas: **STYLE** o **STOCK**, **CURRENCY**, **LINE COST**, **MSRP**.")
 
-        if not all_styles_ordered:
-            st.info("Sube un PDF primero para ver los estilos detectados.")
-        else:
-            manual_prices = {}
-            for style in all_styles_ordered:
-                st.markdown(f"**{style}**")
-                cols = st.columns(len(selected_currencies) * 2)
-                manual_prices[style] = {}
-                for i, currency in enumerate(selected_currencies):
-                    ws_col, ms_col = CURRENCY_MAP[currency]
-                    with cols[i * 2]:
-                        ws_val = st.number_input(
-                            f"WS {currency}", min_value=0.0, value=0.0,
-                            format="%.2f", key=f"ws_{style}_{currency}"
-                        )
-                    with cols[i * 2 + 1]:
-                        ms_val = st.number_input(
-                            f"MSRP {currency}", min_value=0.0, value=0.0,
-                            format="%.2f", key=f"ms_{style}_{currency}"
-                        )
-                    manual_prices[style][ws_col] = ws_val if ws_val > 0 else None
-                    manual_prices[style][ms_col] = ms_val if ms_val > 0 else None
-                st.markdown("---")
+        price_file = st.file_uploader("Sube el Excel con precios", type=["xlsx", "xls", "csv"], key="price_file")
 
-            if st.button("✏️ GENERAR PPT CON PRECIOS MANUALES", type="primary", use_container_width=True, key="btn_manual"):
-                st.session_state.pop("ppt_manual", None)
+        if price_file:
+            try:
+                if price_file.name.endswith(".csv"):
+                    df_prices = pd.read_csv(price_file, dtype=str)
+                else:
+                    df_prices = pd.read_excel(price_file, dtype=str)
 
-                pngs_by_currency = {c: [] for c in selected_currencies}
-                for pdf_name, pdf_bytes in pdf_store.items():
-                    for currency in selected_currencies:
-                        with st.spinner(f"{pdf_name} → {currency}..."):
-                            pngs = process_pdf(pdf_bytes, manual_prices, currency)
-                            pngs_by_currency[currency].extend(pngs)
+                df_prices.columns = [str(c).strip().upper() for c in df_prices.columns]
 
-                total = sum(len(v) for v in pngs_by_currency.values())
-                with st.spinner("Generando PPT..."):
-                    pptx_bytes = build_pptx(pngs_by_currency)
+                style_col_xls = next((c for c in ["STOCK", "STYLE"] if c in df_prices.columns), None)
+                currency_col  = next((c for c in ["CURRENCY", "MONEDA"] if c in df_prices.columns), None)
+                ws_col_xls    = next((c for c in ["LINE COST", "LINE_COST", "WS", "WHOLESALE"] if c in df_prices.columns), None)
+                ms_col_xls    = next((c for c in ["MSRP"] if c in df_prices.columns), None)
 
-                curr_label = "_".join(selected_currencies)
-                fname = f"Presentacion_Manual_{curr_label}_{date.today().strftime('%m.%d.%Y')}.pptx"
-                out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
-                os.makedirs(out_dir, exist_ok=True)
-                try:
-                    with open(os.path.join(out_dir, fname), "wb") as fh:
-                        fh.write(pptx_bytes)
-                except Exception:
-                    pass
-                st.session_state["ppt_manual"] = {"fname": fname, "bytes": pptx_bytes, "slides": total}
+                if not all([style_col_xls, ws_col_xls, ms_col_xls]):
+                    st.error(f"Columnas no encontradas. Detectadas: {', '.join(df_prices.columns)}")
+                else:
+                    st.success(f"✅ {len(df_prices)} filas cargadas — columna estilo: **{style_col_xls}**")
 
-            out_m = st.session_state.get("ppt_manual")
-            if out_m:
-                st.markdown(f'<div class="success-box">✅ {out_m["slides"]} diapositiva(s) generada(s)</div>', unsafe_allow_html=True)
-                st.download_button(
-                    label=f"⬇ Descargar {out_m['fname']}",
-                    data=out_m["bytes"], file_name=out_m["fname"],
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    if currency_col:
+                        currencies_in_file = df_prices[currency_col].dropna().unique().tolist()
+                        file_currency = currencies_in_file[0].strip().upper() if currencies_in_file else "USD"
+                    else:
+                        file_currency = "USD"
+
+                    st.info(f"Moneda detectada: **{file_currency}**")
+
+                    ws_db, ms_db = CURRENCY_MAP.get(file_currency, ("wholesale_usd", "msrp_usd"))
+                    price_data_manual = {}
+                    for _, row in df_prices.iterrows():
+                        style_key = str(row.get(style_col_xls, "") or "").strip()
+                        if not style_key:
+                            continue
+                        try:
+                            ws_val = float(str(row.get(ws_col_xls, "") or "").replace(",", ""))
+                        except (ValueError, TypeError):
+                            ws_val = None
+                        try:
+                            ms_val = float(str(row.get(ms_col_xls, "") or "").replace(",", ""))
+                        except (ValueError, TypeError):
+                            ms_val = None
+                        price_data_manual[style_key] = {ws_db: ws_val, ms_db: ms_val}
+
+                    matched   = [s for s in all_styles_ordered if s in price_data_manual]
+                    unmatched = [s for s in all_styles_ordered if s not in price_data_manual]
+                    st.info(f"✅ {len(matched)} estilo(s) coinciden con el PDF" + (
+                        f" | ⚠️ Sin precio: {', '.join(unmatched)}" if unmatched else ""
+                    ))
+
+                    if st.button("📄 GENERAR PPT CON ARCHIVO DE PRECIOS", type="primary", use_container_width=True, key="btn_manual"):
+                        st.session_state.pop("ppt_manual", None)
+                        pngs_by_currency = {file_currency: []}
+                        for pdf_name, pdf_bytes in pdf_store.items():
+                            with st.spinner(f"Procesando {pdf_name}..."):
+                                pngs = process_pdf(pdf_bytes, price_data_manual, file_currency)
+                                pngs_by_currency[file_currency].extend(pngs)
+                        total = sum(len(v) for v in pngs_by_currency.values())
+                        with st.spinner("Generando PPT..."):
+                            pptx_bytes = build_pptx(pngs_by_currency)
+                        fname = f"Presentacion_{file_currency}_{date.today().strftime('%m.%d.%Y')}.pptx"
+                        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UPCs_generados")
+                        os.makedirs(out_dir, exist_ok=True)
+                        try:
+                            with open(os.path.join(out_dir, fname), "wb") as fh:
+                                fh.write(pptx_bytes)
+                        except Exception:
+                            pass
+                        st.session_state["ppt_manual"] = {"fname": fname, "bytes": pptx_bytes, "slides": total}
+
+            except Exception as e:
+                st.error(f"Error leyendo el archivo: {e}")
+
+        out_m = st.session_state.get("ppt_manual")
+        if out_m:
+            st.markdown(f'<div class="success-box">✅ {out_m["slides"]} diapositiva(s) generada(s)</div>', unsafe_allow_html=True)
+            st.download_button(
+                label=f"⬇ Descargar {out_m['fname']}",
+                data=out_m["bytes"], file_name=out_m["fname"],
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     use_container_width=True, key="dl_manual",
                 )

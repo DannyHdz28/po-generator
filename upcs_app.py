@@ -5,13 +5,14 @@ import os
 import re
 import zipfile
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import date, datetime
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from pbi_downloader import run_download
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template_upcs.xlsx")
+CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache_db.pkl")
 SIZES = ["2T", "3T", "4", "4T", "5", "6", "6X", "7", "OS", "XS", "S", "M", "L", "XL", "2XL", "3XL"]
 
 CURRENCY_MAP = {
@@ -70,7 +71,25 @@ with tab_auto:
     if "db_log" not in st.session_state:
         st.session_state.db_log = []
 
-    if st.button("🔌 Conectar y Descargar", use_container_width=True):
+    # Cargar desde cache local si existe (evita reconectar cada vez)
+    if st.session_state.db_df is None and os.path.exists(CACHE_PATH):
+        try:
+            st.session_state.db_df = pd.read_pickle(CACHE_PATH)
+            mtime = datetime.fromtimestamp(os.path.getmtime(CACHE_PATH))
+            st.session_state["cache_time"] = mtime.strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            pass
+
+    if st.session_state.db_df is not None and st.session_state.get("cache_time"):
+        st.markdown(
+            f'<div class="success-box">✅ Datos cargados ({len(st.session_state.db_df):,} registros) '
+            f'— última actualización: {st.session_state["cache_time"]}</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Usa el botón solo cuando quieras actualizar los datos de la base.")
+
+    btn_label = "🔄 Actualizar datos" if st.session_state.db_df is not None else "🔌 Conectar y Descargar"
+    if st.button(btn_label, use_container_width=True):
         st.session_state.db_df = None
         st.session_state.db_log = []
         st.session_state.pop("output", None)
@@ -83,6 +102,14 @@ with tab_auto:
         with st.spinner("Conectando..."):
             result = run_download(progress_fn=progress)
         st.session_state.db_df = result if result is not None and not isinstance(result, list) else None
+
+        # Guardar en cache local para no reconectar la próxima vez
+        if st.session_state.db_df is not None:
+            try:
+                st.session_state.db_df.to_pickle(CACHE_PATH)
+                st.session_state["cache_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+            except Exception as e:
+                st.session_state.db_log.append(f"No se pudo guardar cache: {e}")
 
     if st.session_state.db_log:
         with st.expander("Log de conexión", expanded=True):

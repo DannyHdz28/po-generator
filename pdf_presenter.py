@@ -111,9 +111,15 @@ def extract_styles_from_pdf(pdf_bytes):
     return styles
 
 
-def process_pdf(pdf_bytes, price_data, currency):
-    """Replace prices in PDF. price_data: {ivnum: {ws_col: val, ms_col: val}}"""
-    ws_col, ms_col = CURRENCY_MAP[currency]
+def process_pdf(pdf_bytes, price_data, currencies, stacked=False):
+    """Replace prices in PDF. price_data: {ivnum: {ws_col: val, ms_col: val}}
+
+    currencies: lista de monedas.
+    stacked=True  -> todas las monedas en la misma diapositiva (una línea por moneda).
+    stacked=False -> normalmente se llama con una sola moneda por render.
+    """
+    if isinstance(currencies, str):
+        currencies = [currencies]
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     result_pngs = []
 
@@ -141,15 +147,20 @@ def process_pdf(pdf_bytes, price_data, currency):
             elif PRICE_RE.search(txt) and current_style:
                 row = price_data.get(current_style)
                 if row is not None:
-                    new_text = (
-                        f"WS: {fmt_price(row.get(ws_col), currency)} / "
-                        f"MSRP: {fmt_price(row.get(ms_col), currency)}"
-                    )
+                    show_prefix = stacked and len(currencies) > 1
+                    lines = []
+                    for curr in currencies:
+                        ws_col, ms_col = CURRENCY_MAP[curr]
+                        prefix = f"{curr} " if show_prefix else ""
+                        lines.append(
+                            f"{prefix}WS: {fmt_price(row.get(ws_col), curr)} / "
+                            f"MSRP: {fmt_price(row.get(ms_col), curr)}"
+                        )
                     replacements.append({
-                        "rect":     fitz.Rect(span["bbox"]),
-                        "new_text": new_text,
-                        "color":    int_to_rgb(span["color"]),
-                        "size":     span["size"],
+                        "rect":  fitz.Rect(span["bbox"]),
+                        "lines": lines,
+                        "color": int_to_rgb(span["color"]),
+                        "size":  span["size"],
                     })
                 current_style = None
 
@@ -160,16 +171,18 @@ def process_pdf(pdf_bytes, price_data, currency):
             page.add_redact_annot(safe_rect, fill=(1, 1, 1))
         page.apply_redactions()
 
-        # Re-insert text
+        # Re-insert text (una línea por moneda, apiladas hacia abajo)
         for rep in replacements:
             rect = rep["rect"]
-            page.insert_text(
-                (rect.x0, rect.y1 - 1),
-                rep["new_text"],
-                fontsize=rep["size"],
-                color=rep["color"],
-                fontname="helv",
-            )
+            line_h = rep["size"] * 1.15
+            for i, line_text in enumerate(rep["lines"]):
+                page.insert_text(
+                    (rect.x0, rect.y1 - 1 + i * line_h),
+                    line_text,
+                    fontsize=rep["size"],
+                    color=rep["color"],
+                    fontname="helv",
+                )
 
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
         result_pngs.append(pix.tobytes("png"))
@@ -215,6 +228,17 @@ selected_currencies = st.multiselect(
     placeholder="Selecciona moneda(s)...",
 )
 
+mode = st.radio(
+    "¿Cómo quieres las monedas?",
+    options=[
+        "Juntas (varias monedas en la misma diapositiva)",
+        "Separadas (una diapositiva por moneda)",
+    ],
+    index=0,
+    key="currency_mode",
+)
+stacked_mode = mode.startswith("Juntas")
+
 if uploaded_pdfs and selected_currencies:
     # Read PDFs and extract styles
     pdf_store = {}
@@ -249,12 +273,19 @@ if uploaded_pdfs and selected_currencies:
                 f" | ⚠️ No encontrados (usa tab Manual): {', '.join(missing)}" if missing else ""
             ))
 
-            pngs_by_currency = {c: [] for c in selected_currencies}
-            for pdf_name, pdf_bytes in pdf_store.items():
-                for currency in selected_currencies:
-                    with st.spinner(f"{pdf_name} → {currency}..."):
-                        pngs = process_pdf(pdf_bytes, price_data, currency)
-                        pngs_by_currency[currency].extend(pngs)
+            if stacked_mode:
+                pngs_all = []
+                for pdf_name, pdf_bytes in pdf_store.items():
+                    with st.spinner(f"{pdf_name} → {', '.join(selected_currencies)}..."):
+                        pngs_all.extend(process_pdf(pdf_bytes, price_data, selected_currencies, stacked=True))
+                pngs_by_currency = {"ALL": pngs_all}
+            else:
+                pngs_by_currency = {c: [] for c in selected_currencies}
+                for pdf_name, pdf_bytes in pdf_store.items():
+                    for currency in selected_currencies:
+                        with st.spinner(f"{pdf_name} → {currency}..."):
+                            pngs = process_pdf(pdf_bytes, price_data, [currency], stacked=False)
+                            pngs_by_currency[currency].extend(pngs)
 
             total = sum(len(v) for v in pngs_by_currency.values())
             with st.spinner("Generando PPT..."):
@@ -356,7 +387,7 @@ if uploaded_pdfs and selected_currencies:
                         pngs_by_currency = {file_currency: []}
                         for pdf_name, pdf_bytes in pdf_store.items():
                             with st.spinner(f"Procesando {pdf_name}..."):
-                                pngs = process_pdf(pdf_bytes, price_data_manual, file_currency)
+                                pngs = process_pdf(pdf_bytes, price_data_manual, [file_currency], stacked=False)
                                 pngs_by_currency[file_currency].extend(pngs)
                         total = sum(len(v) for v in pngs_by_currency.values())
                         with st.spinner("Generando PPT..."):

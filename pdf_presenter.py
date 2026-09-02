@@ -4,6 +4,7 @@ import fitz  # pymupdf
 import re
 import io
 import os
+import time
 import psycopg2
 from datetime import date
 from PIL import Image
@@ -62,15 +63,28 @@ st.markdown("---")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+def _connect_db_with_retry(retries=4, wait_seconds=3):
+    """Conecta reintentando: cubre el caso de red apenas despertando de suspensión."""
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            return psycopg2.connect(
+                host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+                user=DB_USER, password=DB_PASSWORD, connect_timeout=15
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                time.sleep(wait_seconds)
+    raise last_error
+
+
 def fetch_prices(style_codes):
     if not style_codes:
         return {}
     price_cols = [col for pair in CURRENCY_MAP.values() for col in pair]
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
-            user=DB_USER, password=DB_PASSWORD, connect_timeout=15
-        )
+        conn = _connect_db_with_retry()
         cols_str = ", ".join(["ivnum"] + price_cols)
         df = pd.read_sql(
             f"SELECT DISTINCT {cols_str} FROM {TABLE} WHERE ivnum = ANY(%s)",

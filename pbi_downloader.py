@@ -1,3 +1,4 @@
+import time
 import psycopg2
 import pandas as pd
 
@@ -9,16 +10,40 @@ DB_PASSWORD = "R3@d1234!1"
 
 TABLE = "public.sss_upc_report"
 
+# Cuántas veces reintenta conectar antes de rendirse, y cuánto espera entre
+# intentos. Esto cubre el caso en que la laptop acaba de despertar de suspensión
+# y la red (WiFi/VPN) todavía no está lista.
+CONNECT_RETRIES = 4
+RETRY_WAIT_SECONDS = 3
+
+
+def _connect_with_retry(progress_fn=None):
+    """Intenta conectar varias veces. Devuelve la conexión o lanza el último error."""
+    last_error = None
+    for attempt in range(1, CONNECT_RETRIES + 1):
+        try:
+            return psycopg2.connect(
+                host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+                user=DB_USER, password=DB_PASSWORD,
+                connect_timeout=15
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < CONNECT_RETRIES:
+                if progress_fn:
+                    progress_fn(
+                        f"Reintentando conexión ({attempt}/{CONNECT_RETRIES})... "
+                        f"la red puede estar despertando."
+                    )
+                time.sleep(RETRY_WAIT_SECONDS)
+    raise last_error
+
 
 def run_download(progress_fn=None):
     if progress_fn:
         progress_fn("Conectando a la base de datos...")
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
-            user=DB_USER, password=DB_PASSWORD,
-            connect_timeout=15
-        )
+        conn = _connect_with_retry(progress_fn)
     except Exception as e:
         if progress_fn:
             progress_fn(f"ERROR de conexión: {e}")

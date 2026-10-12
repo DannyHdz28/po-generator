@@ -25,6 +25,7 @@ Se abre en `http://localhost:8501`. Debe correr en una máquina con acceso a `\\
 ## Notas técnicas
 
 - Un `.ai` guardado con **"Create PDF Compatible File"** (default de Illustrator) ya es un PDF por dentro. La app lo valida con `pypdf` y lo entrega como `.pdf`, sin necesidad de Illustrator.
+- Después de convertir, revisa cada PDF y dice si los precios son **texto editable** (y cuáles encontró) o si están en **contornos** (no editables).
 - Se marcan como error (para exportar a mano desde Illustrator):
   - `.ai` guardados **sin** "PDF Compatible File" (solo traen una página placeholder).
   - `.ai` antiguos en formato PostScript.

@@ -39,6 +39,10 @@ MAX_LIST     = 1000  # tope de archivos a listar en búsqueda recursiva
 # se guardó SIN "Create PDF Compatible File"
 NO_PDF_MARKERS = ("saved without pdf content", "without pdf content")
 
+# Precios tipo $45 · $45.00 · $ 1,299.99 · USD 45
+PRICE_RE      = re.compile(r"(?:\$|USD)\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?")
+MIN_TEXT_CHARS = 10  # menos que esto = prácticamente sin texto (contornos)
+
 
 # ─── HELPERS ──────────────────────────────────────────────────
 def level_label(i: int) -> str:
@@ -119,6 +123,31 @@ def ai_to_pdf(path_str: str) -> tuple[bytes | None, str]:
         return None, f"PDF interno dañado: {e}"
 
     return data, f"OK · {n_pages} página(s)"
+
+
+def analyze_text(pdf_bytes: bytes) -> dict:
+    """
+    Revisa si el PDF tiene texto real (editable) o si el texto se convirtió
+    a contornos. También detecta los precios que encuentre.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        text   = "\n".join((pg.extract_text() or "") for pg in reader.pages)
+    except Exception as e:
+        return {"status": "error", "msg": f"No se pudo leer el texto: {e}", "prices": []}
+
+    chars  = len(re.sub(r"\s+", "", text))
+    prices = list(dict.fromkeys(m.group(0).replace(" ", "") for m in PRICE_RE.finditer(text)))
+
+    if chars < MIN_TEXT_CHARS:
+        return {"status": "outlines", "prices": [],
+                "msg": "SIN TEXTO — el texto está en contornos (no editable)"}
+    if prices:
+        shown = ", ".join(prices[:8]) + (" …" if len(prices) > 8 else "")
+        return {"status": "editable", "prices": prices,
+                "msg": f"TEXTO EDITABLE · {len(prices)} precio(s): {shown}"}
+    return {"status": "no_prices", "prices": [],
+            "msg": "Texto editable, pero NO se encontraron precios como texto (¿precios en contornos?)"}
 
 
 def pdf_name(file: dict) -> str:
@@ -259,7 +288,8 @@ if st.button("Convertir a PDF →", type="primary"):
     progress = st.progress(0.0, text="Convirtiendo...")
     for i, f in enumerate(selected, start=1):
         pdf_bytes, msg = ai_to_pdf(f["path"])
-        results.append({"file": f, "pdf": pdf_bytes, "msg": msg})
+        text_info = analyze_text(pdf_bytes) if pdf_bytes else None
+        results.append({"file": f, "pdf": pdf_bytes, "msg": msg, "text": text_info})
         progress.progress(i / len(selected), text=f"Convirtiendo {i}/{len(selected)} · {f['name']}")
     progress.empty()
     st.session_state["results"]     = results
@@ -275,7 +305,18 @@ if results:
     if fail:
         st.markdown(f'<span class="pill-warn">✗ {len(fail)} NO SE PUDIERON CONVERTIR</span>', unsafe_allow_html=True)
 
-    with st.expander("Detalle", expanded=bool(fail)):
+    # Resumen de texto editable vs contornos
+    editable = sum(1 for r in ok if r["text"]["status"] == "editable")
+    no_text  = sum(1 for r in ok if r["text"]["status"] in ("outlines", "no_prices", "error"))
+    if ok:
+        st.write("")
+        if editable:
+            st.markdown(f'<span class="pill-ok">✓ {editable} CON PRECIOS EDITABLES</span>', unsafe_allow_html=True)
+        if no_text:
+            st.markdown(f'<span class="pill-warn">⚠ {no_text} SIN PRECIOS COMO TEXTO</span>', unsafe_allow_html=True)
+
+    with st.expander("Detalle", expanded=True):
+        text_colors = {"editable": "#4ade80", "no_prices": "#e8c84a", "outlines": "#f87171", "error": "#f87171"}
         for r in results:
             color = "#4ade80" if r["pdf"] else "#f87171"
             icon  = "✓" if r["pdf"] else "✗"
@@ -283,6 +324,12 @@ if results:
                 f'<div style="font-size:0.8rem;color:{color};">{icon} {pdf_name(r["file"])} — {r["msg"]}</div>',
                 unsafe_allow_html=True,
             )
+            if r["text"]:
+                st.markdown(
+                    f'<div style="font-size:0.75rem;color:{text_colors[r["text"]["status"]]};'
+                    f'margin:0 0 6px 18px;">↳ {r["text"]["msg"]}</div>',
+                    unsafe_allow_html=True,
+                )
 
     folder_name = clean_name(current.name)
     if len(ok) == 1:

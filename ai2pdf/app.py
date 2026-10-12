@@ -33,6 +33,9 @@ LEVEL_LABELS = ["Año", "Quarter", "Cápsula", "Liga", "Equipo"]
 
 AI_EXTS      = {".ai"}
 NONE_OPTION  = "—"
+
+# Carpetas con versiones viejas que se ignoran (OLD, _OLD, OLD FILES, OLDS...)
+OLD_DIR_RE   = re.compile(r"^[_\-\s]*OLD(S)?\b", re.IGNORECASE)
 MAX_LIST     = 1000  # tope de archivos a listar en búsqueda recursiva
 
 # Texto que Illustrator pone en la página "placeholder" cuando el .ai
@@ -54,16 +57,24 @@ def clean_name(name: str) -> str:
     return name.lstrip("_").strip() or name
 
 
+def is_old_dir(name: str) -> bool:
+    return bool(OLD_DIR_RE.match(name))
+
+
 @st.cache_data(ttl=300, show_spinner=False)
-def list_dirs(path_str: str) -> list[str]:
-    """Subcarpetas ordenadas (ignora ocultas y del sistema)."""
+def list_dirs(path_str: str, skip_old: bool = True) -> list[str]:
+    """Subcarpetas ordenadas (ignora ocultas, del sistema y, opcional, las OLD)."""
     with os.scandir(path_str) as it:
-        names = [e.name for e in it if e.is_dir() and not e.name.startswith((".", "~", "$"))]
+        names = [
+            e.name for e in it
+            if e.is_dir() and not e.name.startswith((".", "~", "$"))
+            and not (skip_old and is_old_dir(e.name))
+        ]
     return sorted(names, key=lambda n: clean_name(n).upper())
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def list_ai_files(path_str: str, recursive: bool) -> tuple[list[dict], bool]:
+def list_ai_files(path_str: str, recursive: bool, skip_old: bool = True) -> tuple[list[dict], bool]:
     """Lista los .ai de la carpeta. Regresa (archivos, se_truncó)."""
     root  = Path(path_str)
     found = []
@@ -86,7 +97,8 @@ def list_ai_files(path_str: str, recursive: bool) -> tuple[list[dict], bool]:
                     "size_mb":  round(st_.st_size / 1_048_576, 1),
                     "modified": datetime.fromtimestamp(st_.st_mtime).strftime("%Y-%m-%d %H:%M"),
                 })
-            elif recursive and e.is_dir() and not e.name.startswith((".", "~", "$")):
+            elif (recursive and e.is_dir() and not e.name.startswith((".", "~", "$"))
+                  and not (skip_old and is_old_dir(e.name))):
                 walk(e.path)
 
     walk(path_str)
@@ -187,6 +199,11 @@ with st.sidebar:
         value=True,
         help="Busca .ai también dentro de las subcarpetas de la carpeta seleccionada",
     )
+    skip_old = st.checkbox(
+        "Ignorar carpetas OLD",
+        value=True,
+        help="No muestra ni busca dentro de carpetas OLD / _OLD / OLD FILES (versiones viejas)",
+    )
     if st.button("↻ Re-scan"):
         st.cache_data.clear()
         st.session_state.pop("results", None)
@@ -206,7 +223,7 @@ cols    = st.columns(len(LEVEL_LABELS))
 
 while True:
     try:
-        subdirs = list_dirs(str(current))
+        subdirs = list_dirs(str(current), skip_old)
     except PermissionError:
         st.error(f"Sin permisos para leer: {current}")
         break
@@ -243,7 +260,7 @@ if level == 0:
     st.stop()
 
 with st.spinner("Buscando archivos .ai..."):
-    files, truncated = list_ai_files(str(current), recursive)
+    files, truncated = list_ai_files(str(current), recursive, skip_old)
 
 if not files:
     st.markdown('<span class="pill-warn">⚠ SIN ARCHIVOS .AI</span>', unsafe_allow_html=True)

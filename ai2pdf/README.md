@@ -29,5 +29,6 @@ Se abre en `http://localhost:8501`. Debe correr en una máquina con acceso a `\\
 - Se marcan como error (para exportar a mano desde Illustrator):
   - `.ai` guardados **sin** "PDF Compatible File" (solo traen una página placeholder).
   - `.ai` antiguos en formato PostScript.
+- Por default se ignoran las carpetas **OLD** (`OLD`, `_OLD`, `OLD FILES`, `OLDS`…) para tomar solo lo más actual. Se puede desactivar en el sidebar.
 - Las carpetas con `_` al inicio (ej. `_DALLAS COWBOYS`) se muestran sin el guion bajo.
 - Paso previo a la opción **International** del Deck Builder (precios en otras monedas).

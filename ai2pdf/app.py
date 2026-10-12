@@ -5,8 +5,10 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+import pymupdf
 import streamlit as st
-from pypdf import PdfReader
+
+import currency as cu
 
 # ─── PAGE CONFIG ──────────────────────────────────────────────
 st.set_page_config(page_title="AI → PDF — Pro Standard", page_icon="🎨", layout="wide")
@@ -42,8 +44,6 @@ MAX_LIST     = 1000  # tope de archivos a listar en búsqueda recursiva
 # se guardó SIN "Create PDF Compatible File"
 NO_PDF_MARKERS = ("saved without pdf content", "without pdf content")
 
-# Precios tipo $45 · $45.00 · $ 1,299.99 · USD 45
-PRICE_RE      = re.compile(r"(?:\$|USD)\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?")
 MIN_TEXT_CHARS = 10  # menos que esto = prácticamente sin texto (contornos)
 
 
@@ -124,11 +124,11 @@ def ai_to_pdf(path_str: str) -> tuple[bytes | None, str]:
         return None, "No es un PDF compatible — exportar a PDF desde Illustrator"
 
     try:
-        reader = PdfReader(io.BytesIO(data))
-        n_pages = len(reader.pages)
-        if n_pages == 0:
-            return None, "El PDF interno no tiene páginas"
-        first_text = (reader.pages[0].extract_text() or "").lower()
+        with pymupdf.open(stream=data, filetype="pdf") as doc:
+            n_pages = doc.page_count
+            if n_pages == 0:
+                return None, "El PDF interno no tiene páginas"
+            first_text = doc[0].get_text().lower()
         if any(m in first_text for m in NO_PDF_MARKERS):
             return None, "Guardado SIN 'PDF Compatible File' — exportar a PDF desde Illustrator"
     except Exception as e:
@@ -143,13 +143,14 @@ def analyze_text(pdf_bytes: bytes) -> dict:
     a contornos. También detecta los precios que encuentre.
     """
     try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        text   = "\n".join((pg.extract_text() or "") for pg in reader.pages)
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+            text   = "\n".join(pg.get_text() for pg in doc)
+            prices = [p["text"] for pg in doc for p in cu.find_prices(pg)]
     except Exception as e:
         return {"status": "error", "msg": f"No se pudo leer el texto: {e}", "prices": []}
 
     chars  = len(re.sub(r"\s+", "", text))
-    prices = list(dict.fromkeys(m.group(0).replace(" ", "") for m in PRICE_RE.finditer(text)))
+    prices = list(dict.fromkeys(p.replace(" ", "") for p in prices))
 
     if chars < MIN_TEXT_CHARS:
         return {"status": "outlines", "prices": [],
@@ -162,10 +163,24 @@ def analyze_text(pdf_bytes: bytes) -> dict:
             "msg": "Texto editable, pero NO se encontraron precios como texto (¿precios en contornos?)"}
 
 
-def pdf_name(file: dict) -> str:
-    """Nombre de salida: misma ruta relativa, extensión .pdf"""
-    base = re.sub(r"\.ai$", ".pdf", file["name"], flags=re.IGNORECASE)
+def out_base(file: dict) -> str:
+    """Ruta relativa de salida sin extensión."""
+    base = re.sub(r"\.ai$", "", file["name"], flags=re.IGNORECASE)
     return f"{file['subdir']}/{base}" if file["subdir"] else base
+
+
+def add_outputs(outputs: list, folder: str, file: dict, pdf_bytes: bytes,
+                formats: list[str], dpi: int):
+    """Agrega PDF y/o imágenes de un archivo a la lista de salidas (ruta_zip, bytes)."""
+    prefix = f"{folder}/" if folder else ""
+    base   = out_base(file)
+    if "PDF" in formats:
+        outputs.append((f"{prefix}{base}.pdf", pdf_bytes))
+    if "JPG" in formats:
+        imgs = cu.render_images(pdf_bytes, dpi, "jpg")
+        for i, img in enumerate(imgs, start=1):
+            suffix = f"_p{i}" if len(imgs) > 1 else ""
+            outputs.append((f"{prefix}{base}{suffix}.jpg", img))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -179,7 +194,12 @@ with st.expander("Cómo funciona", expanded=False):
     st.markdown("""
 1. Navega las carpetas del servidor de diseño: **Año → Quarter → Cápsula → Liga → Equipo**.
 2. La app lista los archivos de Illustrator (`.ai`) de esa carpeta.
-3. Selecciona los que quieras y da clic en **Convertir a PDF**. Se descargan ya como `.pdf`.
+3. Selecciona los que quieras, elige monedas y formato (PDF / JPG) y da clic en **Generar**.
+
+**Monedas** (opcional):
+- **Una moneda por archivo** → una carpeta por moneda (`CAD/`, `MXN/`…).
+- **Todas en un archivo** → cada precio muestra todas las monedas elegidas.
+- Si no eliges monedas, se descargan los originales en USD.
 
 Los `.ai` guardados con **"Create PDF Compatible File"** (opción por default de Illustrator)
 se convierten directo. Si alguno se guardó sin esa opción, aparece marcado y hay que
@@ -290,8 +310,9 @@ table = st.data_editor(
 )
 selected = [f for f, row in zip(files, table) if row["Descargar"]]
 
-# ─── STEP 3: CONVERTIR Y DESCARGAR ────────────────────────────
-st.markdown('<div class="section-h">3 · CONVERTIR A PDF</div>', unsafe_allow_html=True)
+
+# ─── STEP 3: MONEDAS Y FORMATO ────────────────────────────────
+st.markdown('<div class="section-h">3 · MONEDAS Y FORMATO</div>', unsafe_allow_html=True)
 
 if not selected:
     st.caption("Selecciona al menos un archivo.")
@@ -300,45 +321,157 @@ if not selected:
 total_mb = sum(f["size_mb"] for f in selected)
 st.caption(f"{len(selected)} archivo(s) seleccionados · {total_mb:.1f} MB")
 
-if st.button("Convertir a PDF →", type="primary"):
-    results  = []
-    progress = st.progress(0.0, text="Convirtiendo...")
+with st.expander("💱 Tipos de cambio (provisional)", expanded=False):
+    st.caption(
+        "Valores de EJEMPLO — se reemplazan cuando se conecte la fuente oficial de precios. "
+        "Puedes editarlos o agregar monedas."
+    )
+    cur_rows = st.data_editor(
+        [dict(c) for c in cu.DEFAULT_CURRENCIES],
+        num_rows="dynamic",
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "code":     st.column_config.TextColumn("Moneda", required=True),
+            "prefix":   st.column_config.TextColumn("Prefijo"),
+            "symbol":   st.column_config.TextColumn("Símbolo"),
+            "rate":     st.column_config.NumberColumn("1 USD =", min_value=0.0, format="%.4f"),
+            "decimals": st.column_config.NumberColumn("Decimales", min_value=0, max_value=4, step=1),
+        },
+        key="currency_table",
+    )
+
+cur_map = {}
+for r in cur_rows:
+    code = (r.get("code") or "").strip().upper()
+    if not code or not r.get("rate"):
+        continue
+    cur_map[code] = {
+        "code":     code,
+        "prefix":   (r.get("prefix") or "").strip(),
+        "symbol":   (r.get("symbol") or "").strip(),
+        "rate":     float(r["rate"]),
+        "decimals": int(r.get("decimals") if r.get("decimals") is not None else 2),
+    }
+usd = cur_map.get("USD", {"code": "USD", "prefix": "USD", "symbol": "$", "rate": 1.0, "decimals": 2})
+
+c1, c2 = st.columns(2)
+with c1:
+    sel_codes = st.multiselect(
+        "Monedas",
+        [k for k in cur_map if k != "USD"],
+        placeholder="Sin monedas = originales en USD",
+    )
+with c2:
+    formats = st.multiselect("Formato de salida", ["PDF", "JPG"], default=["PDF"])
+    dpi = 200
+    if "JPG" in formats:
+        dpi = st.select_slider("Calidad JPG (DPI)", options=[100, 150, 200, 300], value=200)
+
+mode_single = mode_multi = include_orig = False
+layout_multi, include_usd, align = cu.LAYOUT_LINES, True, "left"
+if sel_codes:
+    m1, m2 = st.columns(2)
+    with m1:
+        mode_single = st.checkbox("Una moneda por archivo", value=True,
+                                  help="Una carpeta por moneda: CAD/, MXN/, …")
+        include_orig = st.checkbox("Incluir también los originales (USD)", value=False)
+    with m2:
+        mode_multi = st.checkbox("Todas las monedas en un archivo", value=len(sel_codes) > 1,
+                                 help="Cada precio muestra todas las monedas elegidas")
+        if mode_multi:
+            layout_multi = cu.LAYOUT_LINES if st.radio(
+                "Formato", ["En líneas (una debajo de otra)", "En una sola línea"], horizontal=True,
+            ).startswith("En líneas") else cu.LAYOUT_INLINE
+            include_usd = st.checkbox("Incluir USD", value=True)
+    align = {"Izquierda": "left", "Centro": "center", "Derecha": "right"}[st.radio(
+        "Alineación del precio", ["Izquierda", "Centro", "Derecha"], horizontal=True,
+        help="Cómo se acomoda el precio nuevo respecto al original (cuando el precio está solo en su línea)",
+    )]
+
+if not formats:
+    st.warning("Elige al menos un formato de salida (PDF o JPG).")
+    st.stop()
+if sel_codes and not (mode_single or mode_multi):
+    st.warning("Elige al menos un modo: una moneda por archivo y/o todas en un archivo.")
+    st.stop()
+
+if st.button("Generar →", type="primary"):
+    jobs = []   # (carpeta, monedas, layout)
+    if mode_single:
+        jobs += [(code, [cur_map[code]], cu.LAYOUT_SINGLE) for code in sel_codes]
+    if mode_multi:
+        curs = ([usd] if include_usd else []) + [cur_map[c] for c in sel_codes]
+        jobs.append(("MULTI " + "-".join(c["code"] for c in curs), curs, layout_multi))
+
+    outputs, report, changes, previews = [], [], [], []
+    progress = st.progress(0.0, text="Procesando...")
     for i, f in enumerate(selected, start=1):
+        progress.progress((i - 1) / len(selected), text=f"Procesando {i}/{len(selected)} · {f['name']}")
         pdf_bytes, msg = ai_to_pdf(f["path"])
-        text_info = analyze_text(pdf_bytes) if pdf_bytes else None
-        results.append({"file": f, "pdf": pdf_bytes, "msg": msg, "text": text_info})
-        progress.progress(i / len(selected), text=f"Convirtiendo {i}/{len(selected)} · {f['name']}")
+        text_info      = analyze_text(pdf_bytes) if pdf_bytes else None
+        report.append({"file": f, "ok": bool(pdf_bytes), "msg": msg, "text": text_info, "skipped": False})
+        if not pdf_bytes:
+            continue
+
+        if not sel_codes or include_orig:
+            add_outputs(outputs, "USD (original)" if sel_codes else "", f, pdf_bytes, formats, dpi)
+        if not jobs:
+            continue
+        if text_info["status"] != "editable":
+            report[-1]["skipped"] = True
+            continue
+
+        for folder, curs, lay in jobs:
+            try:
+                new_pdf, ch = cu.apply_currencies(pdf_bytes, curs, lay, align)
+            except Exception as e:
+                changes.append({"Archivo": out_base(f), "Versión": folder, "Pág": "", "Original": "",
+                                "Nuevo": "", "Estado": "✗", "Nota": f"Error: {e}"})
+                continue
+            add_outputs(outputs, folder, f, new_pdf, formats, dpi)
+            for c in ch:
+                changes.append({
+                    "Archivo": out_base(f), "Versión": folder, "Pág": c["page"],
+                    "Original": c["original"], "Nuevo": c["new"],
+                    "Estado": {"ok": "✓", "warn": "⚠", "err": "✗"}[c["status"]], "Nota": c["note"],
+                })
+            if len(previews) < 6:
+                previews.append((f"{folder} · {f['name']}", cu.render_images(new_pdf, 72, "png")[0]))
     progress.empty()
-    st.session_state["results"]     = results
+
+    st.session_state["results"] = {
+        "report": report, "outputs": outputs, "changes": changes,
+        "previews": previews, "tag": "-".join(sel_codes) or "PDF",
+    }
     st.session_state["results_dir"] = str(current)
 
+# ─── RESULTADOS ───────────────────────────────────────────────
 results = st.session_state.get("results")
 if results:
-    ok   = [r for r in results if r["pdf"]]
-    fail = [r for r in results if not r["pdf"]]
+    report  = results["report"]
+    ok      = [r for r in report if r["ok"]]
+    fail    = [r for r in report if not r["ok"]]
+    skipped = [r for r in report if r["skipped"]]
 
+    st.write("")
     if ok:
-        st.markdown(f'<span class="pill-ok">✓ {len(ok)} PDF(S) LISTOS</span>', unsafe_allow_html=True)
+        st.markdown(f'<span class="pill-ok">✓ {len(ok)} ARCHIVO(S) LEÍDOS</span>', unsafe_allow_html=True)
     if fail:
         st.markdown(f'<span class="pill-warn">✗ {len(fail)} NO SE PUDIERON CONVERTIR</span>', unsafe_allow_html=True)
+    if skipped:
+        st.markdown(
+            f'<span class="pill-warn">⚠ {len(skipped)} SIN PRECIOS EDITABLES — SIN VERSIÓN EN OTRAS MONEDAS</span>',
+            unsafe_allow_html=True,
+        )
 
-    # Resumen de texto editable vs contornos
-    editable = sum(1 for r in ok if r["text"]["status"] == "editable")
-    no_text  = sum(1 for r in ok if r["text"]["status"] in ("outlines", "no_prices", "error"))
-    if ok:
-        st.write("")
-        if editable:
-            st.markdown(f'<span class="pill-ok">✓ {editable} CON PRECIOS EDITABLES</span>', unsafe_allow_html=True)
-        if no_text:
-            st.markdown(f'<span class="pill-warn">⚠ {no_text} SIN PRECIOS COMO TEXTO</span>', unsafe_allow_html=True)
-
-    with st.expander("Detalle", expanded=True):
+    with st.expander("Detalle por archivo", expanded=bool(fail or skipped)):
         text_colors = {"editable": "#4ade80", "no_prices": "#e8c84a", "outlines": "#f87171", "error": "#f87171"}
-        for r in results:
-            color = "#4ade80" if r["pdf"] else "#f87171"
-            icon  = "✓" if r["pdf"] else "✗"
+        for r in report:
+            color = "#4ade80" if r["ok"] else "#f87171"
+            icon  = "✓" if r["ok"] else "✗"
             st.markdown(
-                f'<div style="font-size:0.8rem;color:{color};">{icon} {pdf_name(r["file"])} — {r["msg"]}</div>',
+                f'<div style="font-size:0.8rem;color:{color};">{icon} {r["file"]["name"]} — {r["msg"]}</div>',
                 unsafe_allow_html=True,
             )
             if r["text"]:
@@ -348,25 +481,43 @@ if results:
                     unsafe_allow_html=True,
                 )
 
+    if results["changes"]:
+        n_warn = sum(1 for c in results["changes"] if c["Estado"] != "✓")
+        st.markdown('<div class="section-h">REVISIÓN DE PRECIOS</div>', unsafe_allow_html=True)
+        if n_warn:
+            st.markdown(f'<span class="pill-warn">⚠ {n_warn} PRECIO(S) PARA REVISAR</span>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="pill-ok">✓ TODOS LOS PRECIOS CAMBIADOS SIN AVISOS</span>', unsafe_allow_html=True)
+        st.dataframe(results["changes"], hide_index=True, width="stretch")
+
+    if results["previews"]:
+        st.markdown('<div class="section-h">PREVIEW</div>', unsafe_allow_html=True)
+        pcols = st.columns(3)
+        for i, (label, img) in enumerate(results["previews"]):
+            with pcols[i % 3]:
+                st.image(img, caption=label, width="stretch")
+
+    outputs     = results["outputs"]
     folder_name = clean_name(current.name)
-    if len(ok) == 1:
+    if len(outputs) == 1:
+        name, data = outputs[0]
         st.download_button(
-            "⬇ Descargar PDF",
-            data=ok[0]["pdf"],
-            file_name=Path(pdf_name(ok[0]["file"])).name,
-            mime="application/pdf",
+            "⬇ Descargar",
+            data=data,
+            file_name=Path(name).name,
+            mime="application/pdf" if name.endswith(".pdf") else "image/jpeg",
             type="primary",
         )
-    elif ok:
+    elif outputs:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for r in ok:
-                zf.writestr(pdf_name(r["file"]), r["pdf"])
+            for name, data in outputs:
+                zf.writestr(name, data)
         buf.seek(0)
         st.download_button(
-            f"⬇ Descargar {len(ok)} PDFs (.zip)",
+            f"⬇ Descargar {len(outputs)} archivo(s) (.zip)",
             data=buf,
-            file_name=f"{folder_name} — PDF.zip",
+            file_name=f"{folder_name} — {results['tag']}.zip",
             mime="application/zip",
             type="primary",
         )
